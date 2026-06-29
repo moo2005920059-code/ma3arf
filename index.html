@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>منصة الباك</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a1628">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, updatePassword, updateProfile, reauthenticateWithCredential, EmailAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+
+// ══════════════════════════════════════
+//  🔧 ضع إعدادات Firebase هنا
+// ══════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyAAZpDjainzHI25ILq6KqDhIuwGbu4PEM4",
+  authDomain: "ma3arf.firebaseapp.com",
+  projectId: "ma3arf",
+  storageBucket: "ma3arf.firebasestorage.app",
+  messagingSenderId: "113548214837",
+  appId: "1:113548214837:web:c044564d446800ffe6e77c"
+};
+
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
+const storage = getStorage(app);
+
+// ══════════════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════════════
+const state = {
+  currentSection: null,   // 'sci' | 'lit' | 'ninth'
+  currentTab: 'courses',  // 'courses' | 'subjects'
+  currentCourse: null,    // { id, name, date, isFree }
+  currentSubject: null,   // { id, name, icon, isFree }
+  currentLesson: null,    // { id, name }
+  unlockedSections: JSON.parse(localStorage.getItem('unlocked') || '[]'),
+  bookmarks: JSON.parse(localStorage.getItem('bookmarks') || '[]'),
+  currentQuestions: [],
+  questionSource: null,   // 'course' | 'lesson'
+};
+
+const SECTION_NAMES = { sci: 'بكالوريا علمي', lit: 'بكالوريا أدبي', ninth: 'الصف التاسع' };
+
+// ══════════════════════════════════════════════════════════════
+//  NAVIGATION
+// ══════════════════════════════════════════════════════════════
+function goTo(screenId) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + screenId).classList.add('active');
+  window.scrollTo(0,0);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  AUTH
+// ══════════════════════════════════════════════════════════════
+window.doLogin = async function() {
+  const email = document.getElementById('login-email').value.trim();
+  const pass  = document.getElementById('login-pass').value;
+  const err   = document.getElementById('login-error');
+  const btn   = document.querySelector('#form-login .btn-primary');
+  err.textContent = '';
+  if (!email || !pass) return err.textContent = 'أدخل البريد وكلمة المرور';
+  btn.textContent = 'جاري الدخول...';
+  btn.disabled = true;
+  try {
+    console.log('محاولة دخول:', email);
+    const result = await signInWithEmailAndPassword(auth, email, pass);
+    console.log('نجح الدخول:', result.user.uid);
+    console.log('قبل goTo');
+    goTo('main');
+    console.log('بعد goTo');
+  } catch(e) {
+    console.error('خطأ كامل:', e);
+    err.textContent = 'خطأ: ' + e.code;
+  } finally {
+    btn.textContent = 'دخول';
+    btn.disabled = false;
+  }
+};
+
+window.doRegister = async function() {
+  const name  = document.getElementById('reg-name').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const pass  = document.getElementById('reg-pass').value;
+  const err   = document.getElementById('register-error');
+  err.textContent = '';
+  if (!name)  return err.textContent = 'أدخل اسمك الكامل';
+  if (!email) return err.textContent = 'أدخل البريد الإلكتروني';
+  if (pass.length < 6) return err.textContent = 'كلمة المرور يجب أن تكون 6 أحرف على الأقل';
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, email, pass);
+    // Save name to Firestore
+    await setDoc(doc(db, 'users', cred.user.uid), {
+      name, email, createdAt: new Date().toISOString(), role: 'student'
+    });
+    goTo('main');
+  } catch(e) {
+    if (e.code === 'auth/email-already-in-use') err.textContent = 'هذا البريد مسجل مسبقاً';
+    else if (e.code === 'auth/invalid-email')   err.textContent = 'البريد الإلكتروني غير صحيح';
+    else err.textContent = 'حدث خطأ، حاول مجدداً';
+  }
+};
+
+window.switchTab = function(tab) {
+  const header = document.querySelector('.auth-header');
+  const tabs   = document.querySelector('.auth-tabs');
+  const wrap   = document.querySelector('.auth-forms-wrap');
+  header.classList.toggle('collapsed', tab === 'register');
+  tabs.classList.toggle('on-register', tab === 'register');
+  wrap.classList.toggle('show-register', tab === 'register');
+  document.querySelectorAll('.auth-tab').forEach((t,i) => {
+    t.classList.toggle('active', (i===0 && tab==='login') || (i===1 && tab==='register'));
+  });
+  document.querySelector('.auth-screen-title').textContent = tab==='login' ? 'تسجيل الدخول' : 'حساب جديد';
+  document.querySelector('.auth-screen-sub').textContent   = tab==='login' ? 'أدخل بياناتك للمتابعة' : 'أنشئ حسابك الآن';
+};
+
+window.togglePass = function(id, btn) {
+  const inp = document.getElementById(id);
+  inp.type  = inp.type === 'password' ? 'text' : 'password';
+  btn.textContent = inp.type === 'password' ? '👁️' : '🙈';
+};
+
+// ══════════════════════════════════════════════════════════════
+//  MAIN SCREEN — pick section
+// ══════════════════════════════════════════════════════════════
+window.goToSection = async function(section) {
+  state.currentSection = section;
+  state.currentTab = 'courses';
+
+  document.getElementById('section-topbar-title').textContent = SECTION_NAMES[section];
+  document.getElementById('section-breadcrumb').textContent   = SECTION_NAMES[section];
+
+  // Check if locked
+  const isUnlocked = state.unlockedSections.includes(section);
+  document.getElementById('section-locked-banner').style.display = isUnlocked ? 'none' : 'flex';
+
+  switchSectionTab('courses');
+  goTo('section');
+};
+
+window.switchSectionTab = function(tab) {
+  state.currentTab = tab;
+  document.querySelectorAll('.sec-tab').forEach((t,i) => {
+    t.classList.toggle('active', (i===0 && tab==='courses') || (i===1 && tab==='subjects'));
+  });
+  document.querySelectorAll('.sec-tab-content').forEach(c => c.style.display='none');
+  document.getElementById('tab-' + tab).style.display = 'block';
+
+  if (tab === 'courses') loadCourses();
+  else loadSectionSubjects();
+};
+
+// ══════════════════════════════════════════════════════════════
+//  COURSES TAB
+// ══════════════════════════════════════════════════════════════
+async function loadCourses() {
+  const container = document.getElementById('courses-list');
+  container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'sections', state.currentSection, 'courses'), orderBy('date','desc'))
+    );
+    if (snap.empty) {
+      container.innerHTML = '<div class="empty-state"><div class="es-icon">📅</div><p>لا توجد دورات بعد</p></div>';
+      return;
+    }
+    container.innerHTML = '';
+    snap.forEach(d => {
+      const c = { id: d.id, ...d.data() };
+      const card = document.createElement('div');
+      card.className = 'course-card';
+      card.innerHTML = `
+        <div class="course-card-left">
+          <div class="course-date">${c.date || ''}</div>
+          <div class="course-name">${c.name || 'دورة'}</div>
+        </div>
+        <div class="course-card-right">
+          ${c.isFree ? '<span class="badge-free">مجاني</span>' : '<span class="badge-paid">🔒 مدفوع</span>'}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        </div>`;
+      card.onclick = () => goToCourseSubjects(c);
+      container.appendChild(card);
+    });
+  } catch(e) {
+    container.innerHTML = '<div class="empty-state"><p>خطأ في التحميل</p></div>';
+  }
+}
+
+window.goToCourseSubjects = async function(course) {
+  state.currentCourse = course;
+  document.getElementById('course-subjects-title').textContent = course.name;
+  document.getElementById('course-subjects-date').textContent  = course.date || '';
+  document.getElementById('course-bc').textContent = `${SECTION_NAMES[state.currentSection]} ← ${course.name}`;
+
+  const container = document.getElementById('course-subjects-list');
+  container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+  goTo('course-subjects');
+
+  try {
+    const snap = await getDocs(
+      collection(db, 'sections', state.currentSection, 'courses', course.id, 'subjects')
+    );
+    if (snap.empty) {
+      container.innerHTML = '<div class="empty-state"><div class="es-icon">📚</div><p>لا توجد مواد في هذه الدورة</p></div>';
+      return;
+    }
+    container.innerHTML = '';
+    snap.forEach(d => {
+      const s = { id: d.id, ...d.data() };
+      const card = document.createElement('div');
+      card.className = 'subject-card';
+      card.innerHTML = `
+        <div class="subject-icon">${s.icon || '📖'}</div>
+        <div class="subject-info"><h4>${s.name}</h4><p>${s.qCount || 0} سؤال</p></div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`;
+      card.onclick = () => loadQuestionsWithCache('course', state.currentSection, course.id, s.id, s.name);
+      container.appendChild(card);
+    });
+  } catch(e) {
+    container.innerHTML = '<div class="empty-state"><p>خطأ في التحميل</p></div>';
+  }
+};
+
+// ══════════════════════════════════════════════════════════════
+//  SUBJECTS TAB
+// ══════════════════════════════════════════════════════════════
+async function loadSectionSubjects() {
+  const container = document.getElementById('section-subjects-list');
+  container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+  try {
+    const snap = await getDocs(
+      collection(db, 'sections', state.currentSection, 'subjects')
+    );
+    if (snap.empty) {
+      container.innerHTML = '<div class="empty-state"><div class="es-icon">📖</div><p>لا توجد مواد بعد</p></div>';
+      return;
+    }
+    container.innerHTML = '';
+    snap.forEach(d => {
+      const s = { id: d.id, ...d.data() };
+      const card = document.createElement('div');
+      card.className = 'subject-card';
+      card.innerHTML = `
+        <div class="subject-icon">${s.icon || '📖'}</div>
+        <div class="subject-info"><h4>${s.name}</h4><p>${s.lessonCount || 0} درس</p></div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`;
+      card.onclick = () => goToLessons(s);
+      container.appendChild(card);
+    });
+  } catch(e) {
+    container.innerHTML = '<div class="empty-state"><p>خطأ في التحميل</p></div>';
+  }
+}
+
+window.goToLessons = async function(subject) {
+  state.currentSubject = subject;
+  document.getElementById('lessons-title').textContent = subject.name;
+  document.getElementById('lessons-bc').textContent = `${SECTION_NAMES[state.currentSection]} ← ${subject.name}`;
+
+  const container = document.getElementById('lessons-list');
+  container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+  goTo('lessons');
+
+  try {
+    const snap = await getDocs(
+      collection(db, 'sections', state.currentSection, 'subjects', subject.id, 'lessons')
+    );
+    if (snap.empty) {
+      container.innerHTML = '<div class="empty-state"><div class="es-icon">📝</div><p>لا توجد دروس بعد</p></div>';
+      return;
+    }
+    container.innerHTML = '';
+    snap.forEach(d => {
+      const l = { id: d.id, ...d.data() };
+      const card = document.createElement('div');
+      card.className = 'lesson-card';
+      card.innerHTML = `
+        <div class="lesson-num">${l.order || ''}</div>
+        <div class="lesson-info"><h4>${l.name}</h4><p>${l.qCount || 0} سؤال</p></div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`;
+      card.onclick = () => loadQuestionsWithCache('lesson', state.currentSection, subject.id, l.id, l.name);
+      container.appendChild(card);
+    });
+  } catch(e) {
+    container.innerHTML = '<div class="empty-state"><p>خطأ في التحميل</p></div>';
+  }
+};
+
+// ══════════════════════════════════════════════════════════════
+//  QUESTIONS
+// ══════════════════════════════════════════════════════════════
+async function loadQuestions(source, section, parentId, childId, title) {
+  state.questionSource = source;
+  document.getElementById('questions-title').textContent = title;
+
+  let path;
+  if (source === 'course') {
+    path = collection(db, 'sections', section, 'courses', parentId, 'subjects', childId, 'questions');
+    document.getElementById('questions-bc').textContent =
+      `${SECTION_NAMES[section]} ← ${state.currentCourse?.name || ''} ← ${title}`;
+  } else {
+    path = collection(db, 'sections', section, 'subjects', parentId, 'lessons', childId, 'questions');
+    document.getElementById('questions-bc').textContent =
+      `${SECTION_NAMES[section]} ← ${state.currentSubject?.name || ''} ← ${title}`;
+  }
+
+  const container = document.getElementById('questions-container');
+  container.innerHTML = '<div class="loading">جاري التحميل...</div>';
+  goTo('questions');
+
+  try {
+    const snap = await getDocs(query(path, orderBy('order')));
+    state.currentQuestions = [];
+    snap.forEach(d => state.currentQuestions.push({ id: d.id, ...d.data() }));
+
+    document.getElementById('q-count-label').textContent = `${state.currentQuestions.length} سؤال`;
+    renderQuestions(container);
+  } catch(e) {
+    container.innerHTML = '<div class="empty-state"><p>خطأ في تحميل الأسئلة</p></div>';
+  }
+}
+
+function renderQuestions(container) {
+  container.innerHTML = '';
+  state.currentQuestions.forEach((q, i) => {
+    const isSaved = state.bookmarks.some(b => b.id === q.id);
+    const card = document.createElement('div');
+    card.className = 'question-card';
+    card.id = 'qcard-' + i;
+
+    // Question content: text, image, or both
+    let qContent = '';
+    if (q.text) qContent += `<div class="q-text">${q.text}</div>`;
+    if (q.imageUrl) qContent += `<img class="q-img" src="${q.imageUrl}" alt="صورة السؤال" loading="lazy">`;
+
+    // Answer content
+    let aContent = '';
+    if (q.answerText) aContent += `<div class="a-text">${q.answerText}</div>`;
+    if (q.answerImageUrl) aContent += `<img class="q-img" src="${q.answerImageUrl}" alt="صورة الجواب" loading="lazy">`;
+
+    // Course badge for lesson questions
+    const courseBadge = (state.questionSource === 'lesson' && q.courseRef)
+      ? `<span class="course-badge">دورة ${q.courseRef}</span>` : '';
+
+    card.innerHTML = `
+      <div class="q-header">
+        <span class="q-label">سؤال ${i+1}</span>
+        ${courseBadge}
+        <button class="btn-save ${isSaved ? 'saved' : ''}" onclick="toggleBookmark(${i})" title="حفظ">🔖</button>
+      </div>
+      ${qContent}
+      <div class="q-actions">
+        <button class="btn-reveal" onclick="revealAnswer(${i})">👁️ أظهر الجواب</button>
+      </div>
+      <div class="answer-box" id="ans-${i}">
+        <div class="a-label">✅ الجواب الصحيح</div>
+        ${aContent}
+      </div>`;
+    container.appendChild(card);
+  });
+  updateProgress();
+}
+
+window.revealAnswer = function(i) {
+  const box  = document.getElementById('ans-' + i);
+  const btn  = document.querySelector(`#qcard-${i} .btn-reveal`);
+  const card = document.getElementById('qcard-' + i);
+  const open = box.classList.toggle('show');
+  card.classList.toggle('revealed', open);
+  btn.textContent = open ? '🙈 أخفِ الجواب' : '👁️ أظهر الجواب';
+  updateProgress();
+};
+
+function updateProgress() {
+  const total = state.currentQuestions.length;
+  const done  = document.querySelectorAll('.question-card.revealed').length;
+  const pct   = total ? (done/total*100) : 0;
+  const fill  = document.getElementById('progress-fill');
+  if (fill) fill.style.width = pct + '%';
+}
+
+window.toggleBookmark = function(i) {
+  const q   = state.currentQuestions[i];
+  const btn = document.querySelector(`#qcard-${i} .btn-save`);
+  const idx = state.bookmarks.findIndex(b => b.id === q.id);
+  if (idx >= 0) { state.bookmarks.splice(idx,1); btn.classList.remove('saved'); }
+  else          { state.bookmarks.push(q);        btn.classList.add('saved'); }
+  localStorage.setItem('bookmarks', JSON.stringify(state.bookmarks));
+  document.getElementById('bookmark-count').textContent = state.bookmarks.length;
+};
+
+window.showBookmarks = function() {
+  const content = document.getElementById('bookmarks-content');
+  if (!state.bookmarks.length) {
+    content.innerHTML = '<div class="empty-state"><div class="es-icon">🔖</div><p>لا توجد محفوظات بعد</p></div>';
+  } else {
+    content.innerHTML = state.bookmarks.map((q,i) => `
+      <div class="question-card" style="margin-bottom:12px">
+        <div class="q-text">${q.text || ''}</div>
+        ${q.imageUrl ? `<img class="q-img" src="${q.imageUrl}">` : ''}
+      </div>`).join('');
+  }
+  document.getElementById('bookmarks-modal').classList.add('open');
+};
+window.hideBookmarks = function(e) {
+  if (!e || e.target === document.getElementById('bookmarks-modal'))
+    document.getElementById('bookmarks-modal').classList.remove('open');
+};
+
+// ══════════════════════════════════════════════════════════════
+//  ACTIVATION CODES
+// ══════════════════════════════════════════════════════════════
+window.tryUnlock = async function() {
+  const code = document.getElementById('unlock-input').value.trim().toUpperCase();
+  if (!code) return;
+  try {
+    const snap = await getDoc(doc(db, 'activation_codes', code));
+    if (!snap.exists()) { alert('❌ الكود غير صحيح'); return; }
+    const data = snap.data();
+    if (data.used) { alert('❌ هذا الكود مستخدم مسبقاً'); return; }
+
+    // Mark as used
+    await updateDoc(doc(db, 'activation_codes', code), { used: true, usedAt: new Date().toISOString() });
+
+    // Unlock appropriate content
+    if (data.type === 'section') {
+      if (!state.unlockedSections.includes(data.section))
+        state.unlockedSections.push(data.section);
+    }
+    // subject unlock: store separately
+    localStorage.setItem('unlocked', JSON.stringify(state.unlockedSections));
+    hideLockBanner();
+    alert('✅ تم فتح المحتوى بنجاح!');
+  } catch(e) {
+    alert('خطأ في التحقق من الكود');
+  }
+};
+
+window.hideLockBanner = function() {
+  document.getElementById('section-locked-banner').style.display = 'none';
+};
+
+// ══════════════════════════════════════════════════════════════
+//  BACK NAVIGATION
+// ══════════════════════════════════════════════════════════════
+window.goBack = function(target) { goTo(target); };
+
+// ══════════════════════════════════════════════════════════════
+//  FORGOT PASSWORD
+// ══════════════════════════════════════════════════════════════
+window.showForgotPassword = function() {
+  document.getElementById('modal-forgot').style.display = 'flex';
+  document.getElementById('forgot-email').value = document.getElementById('login-email').value || '';
+  document.getElementById('forgot-msg').textContent = '';
+};
+window.hideForgotPassword = function(e) {
+  if (!e || e.target === document.getElementById('modal-forgot'))
+    document.getElementById('modal-forgot').style.display = 'none';
+};
+window.sendResetEmail = async function() {
+  const email = document.getElementById('forgot-email').value.trim();
+  const msg   = document.getElementById('forgot-msg');
+  const btn   = document.getElementById('forgot-btn');
+  if (!email) return msg.textContent = 'أدخل بريدك الإلكتروني';
+  btn.disabled = true; btn.textContent = 'جاري الإرسال...';
+  try {
+    await sendPasswordResetEmail(auth, email);
+    msg.style.color = '#2e7d32';
+    msg.textContent = '✅ تم إرسال رابط إعادة التعيين لبريدك';
+    setTimeout(() => document.getElementById('modal-forgot').style.display = 'none', 3000);
+  } catch(e) {
+    msg.style.color = '#e74c3c';
+    if (e.code === 'auth/user-not-found')   msg.textContent = 'هذا البريد غير مسجل';
+    else if (e.code === 'auth/invalid-email') msg.textContent = 'البريد غير صحيح';
+    else msg.textContent = 'حدث خطأ، حاول مجدداً';
+  } finally { btn.disabled=false; btn.textContent='إرسال'; }
+};
+
+// ══════════════════════════════════════════════════════════════
+//  PROFILE EDIT
+// ══════════════════════════════════════════════════════════════
+window.showProfile = function() {
+  const user = auth.currentUser;
+  if (!user) return;
+  document.getElementById('profile-name-input').value = user.displayName || '';
+  document.getElementById('profile-email-show').textContent = user.email || '';
+  document.getElementById('profile-msg').textContent = '';
+  document.getElementById('profile-pass-section').style.display = 'none';
+  document.getElementById('modal-profile').style.display = 'flex';
+};
+window.hideProfile = function(e) {
+  if (!e || e.target === document.getElementById('modal-profile'))
+    document.getElementById('modal-profile').style.display = 'none';
+};
+window.toggleChangePass = function() {
+  const sec = document.getElementById('profile-pass-section');
+  sec.style.display = sec.style.display === 'none' ? 'block' : 'none';
+};
+window.saveProfile = async function() {
+  const user       = auth.currentUser;
+  const newName    = document.getElementById('profile-name-input').value.trim();
+  const currentPass= document.getElementById('profile-current-pass').value;
+  const newPass    = document.getElementById('profile-new-pass').value;
+  const msg        = document.getElementById('profile-msg');
+  const btn        = document.getElementById('profile-save-btn');
+  msg.textContent  = '';
+
+  if (!currentPass) return msg.textContent = 'أدخل كلمة المرور الحالية للتأكيد';
+
+  btn.disabled = true; btn.textContent = 'جاري الحفظ...';
+  try {
+    // Re-authenticate first
+    const cred = EmailAuthProvider.credential(user.email, currentPass);
+    await reauthenticateWithCredential(user, cred);
+
+    // Update name
+    if (newName && newName !== user.displayName) {
+      await updateProfile(user, { displayName: newName });
+      await updateDoc(doc(db, 'users', user.uid), { name: newName });
+    }
+
+    // Update password if provided
+    if (newPass) {
+      if (newPass.length < 6) { msg.style.color='#e74c3c'; msg.textContent='كلمة المرور الجديدة قصيرة جداً'; return; }
+      await updatePassword(user, newPass);
+    }
+
+    msg.style.color = '#2e7d32';
+    msg.textContent = '✅ تم الحفظ بنجاح';
+    document.getElementById('profile-current-pass').value = '';
+    document.getElementById('profile-new-pass').value = '';
+    setTimeout(() => document.getElementById('modal-profile').style.display = 'none', 2000);
+  } catch(e) {
+    msg.style.color = '#e74c3c';
+    if (e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential')
+      msg.textContent = 'كلمة المرور الحالية غير صحيحة';
+    else msg.textContent = 'خطأ: ' + e.code;
+  } finally { btn.disabled=false; btn.textContent='حفظ'; }
+};
+
+// ══════════════════════════════════════════════════════════════
+//  OFFLINE — IndexedDB cache for questions
+// ══════════════════════════════════════════════════════════════
+const IDB_NAME = 'ma3arf-offline';
+const IDB_VER  = 1;
+
+function openIDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, IDB_VER);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('questions'))
+        db.createObjectStore('questions', { keyPath: 'cacheKey' });
+      if (!db.objectStoreNames.contains('lists'))
+        db.createObjectStore('lists', { keyPath: 'cacheKey' });
+    };
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror   = e => reject(e);
+  });
+}
+
+async function idbGet(store, key) {
+  const db  = await openIDB();
+  return new Promise((resolve) => {
+    const tx  = db.transaction(store, 'readonly');
+    const req = tx.objectStore(store).get(key);
+    req.onsuccess = () => resolve(req.result?.data);
+    req.onerror   = () => resolve(null);
+  });
+}
+
+async function idbSet(store, key, data) {
+  const db = await openIDB();
+  return new Promise((resolve) => {
+    const tx  = db.transaction(store, 'readwrite');
+    tx.objectStore(store).put({ cacheKey: key, data, savedAt: Date.now() });
+    tx.oncomplete = resolve;
+  });
+}
+
+// Wrap loadQuestions to use offline cache
+const _origLoadQ = loadQuestions;
+async function loadQuestionsWithCache(source, section, parentId, childId, title) {
+  const cacheKey = `${source}|${section}|${parentId}|${childId}`;
+  const container = document.getElementById('questions-container');
+
+  // Try offline first if no connection
+  if (!navigator.onLine) {
+    const cached = await idbGet('questions', cacheKey);
+    if (cached) {
+      state.currentQuestions = cached;
+      state.questionSource   = source;
+      document.getElementById('questions-title').textContent = title;
+      document.getElementById('q-count-label').textContent   = `${cached.length} سؤال (offline)`;
+      renderQuestions(container);
+      goTo('questions');
+      return;
+    }
+  }
+
+  // Online: load from Firestore then cache
+  await loadQuestions(source, section, parentId, childId, title);
+  if (state.currentQuestions.length > 0)
+    await idbSet('questions', cacheKey, state.currentQuestions);
+}
+
+// Show offline indicator
+window.addEventListener('online',  () => showNetStatus(true));
+window.addEventListener('offline', () => showNetStatus(false));
+function showNetStatus(online) {
+  let bar = document.getElementById('net-status-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'net-status-bar';
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999;text-align:center;padding:6px;font-family:Cairo,sans-serif;font-size:13px;font-weight:700;transition:all .3s';
+    document.body.appendChild(bar);
+  }
+  bar.textContent = online ? '✅ متصل بالإنترنت' : '📴 أنت offline — الأسئلة المحفوظة متاحة';
+  bar.style.background = online ? '#2e7d32' : '#e65100';
+  bar.style.color = '#fff';
+  if (online) setTimeout(() => bar.style.display = 'none', 3000);
+  else bar.style.display = 'block';
+}
+
+// ── Register Service Worker ──
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => console.log('SW registered:', reg.scope))
+      .catch(err => console.log('SW error:', err));
+  });
+}
+
+// ── Auth state ──
+onAuthStateChanged(auth, user => {
+  if (user) {
+    document.getElementById('bookmark-count').textContent = state.bookmarks.length;
+    goTo('main');
+  }
+});
+
+</script>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════
+     AUTH SCREEN
+══════════════════════════════════════ -->
+<div id="screen-auth" class="screen active">
+  <div class="auth-header">
+    <div class="bubble"></div><div class="bubble"></div>
+    <div class="bubble"></div><div class="bubble"></div>
+    <div class="auth-header-logo">
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+        <path d="M6 12v5c3.33 1.67 8.67 1.67 12 0v-5"/>
+      </svg>
+    </div>
+    <p class="auth-header-sub">أهلاً بك مجدداً 👋</p>
+  </div>
+  <div class="auth-body">
+    <h2 class="auth-screen-title">تسجيل الدخول</h2>
+    <p class="auth-screen-sub">أدخل بياناتك للمتابعة</p>
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="switchTab('login')">تسجيل الدخول</button>
+      <button class="auth-tab" onclick="switchTab('register')">حساب جديد</button>
+    </div>
+    <div class="auth-forms-wrap">
+      <div id="form-login" class="form-panel">
+        <div class="form-group">
+          <div class="field-row">
+            <span class="field-icon"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#bbb" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></span>
+            <input type="email" id="login-email" placeholder="البريد الإلكتروني">
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="field-row">
+            <span class="field-icon"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#bbb" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+            <input type="password" id="login-pass" placeholder="كلمة المرور">
+            <button class="toggle-pass" onclick="togglePass('login-pass',this)">👁️</button>
+          </div>
+        </div>
+        <div id="login-error" style="color:#e74c3c;font-size:13px;margin-bottom:10px;text-align:center"></div>
+        <div class="forgot-link"><a href="#" onclick="showForgotPassword();return false">نسيت كلمة المرور؟</a></div>
+        <button class="btn-primary" onclick="doLogin()">دخول</button>
+        <div class="auth-divider"><span>أو</span></div>
+        <div class="auth-switch">ما عندك حساب؟ <a href="#" onclick="switchTab('register');return false">سجّل الآن</a></div>
+      </div>
+      <div id="form-register" class="form-panel">
+        <div class="form-group">
+          <div class="field-row">
+            <span class="field-icon"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#bbb" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+            <input type="text" id="reg-name" placeholder="الاسم الكامل">
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="field-row">
+            <span class="field-icon"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#bbb" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></span>
+            <input type="email" id="reg-email" placeholder="البريد الإلكتروني">
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="field-row">
+            <span class="field-icon"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#bbb" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+            <input type="password" id="reg-pass" placeholder="كلمة المرور (6 أحرف+)">
+            <button class="toggle-pass" onclick="togglePass('reg-pass',this)">👁️</button>
+          </div>
+        </div>
+        <div id="register-error" style="color:#e74c3c;font-size:13px;margin-bottom:10px;text-align:center"></div>
+        <button class="btn-primary" onclick="doRegister()">إنشاء الحساب</button>
+        <div class="auth-divider"><span>أو</span></div>
+        <div class="auth-switch">عندك حساب؟ <a href="#" onclick="switchTab('login');return false">سجّل دخولك</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     MAIN SCREEN
+══════════════════════════════════════ -->
+<div id="screen-main" class="screen">
+  <div class="topbar">
+    <div class="topbar-logo">🎓 منصة الباك</div>
+    <button class="profile-btn" onclick="showProfile()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    </button>
+  </div>
+  <div class="content">
+    <div class="welcome-banner">
+      <h2>أهلاً بك! 👋</h2>
+      <p>اختر قسمك وابدأ المراجعة</p>
+    </div>
+    <div class="section-title">الأقسام الدراسية</div>
+    <div class="division-cards">
+      <div class="division-card sci" onclick="goToSection('sci')">
+        <div class="div-icon">🔬</div>
+        <div class="div-info">
+          <h3>بكالوريا علمي</h3>
+          <p>دورات ومواد علمية</p>
+        </div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      </div>
+      <div class="division-card lit" onclick="goToSection('lit')">
+        <div class="div-icon">📚</div>
+        <div class="div-info">
+          <h3>بكالوريا أدبي</h3>
+          <p>دورات ومواد أدبية</p>
+        </div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      </div>
+      <div class="division-card ninth" onclick="goToSection('ninth')">
+        <div class="div-icon">📐</div>
+        <div class="div-info">
+          <h3>الصف التاسع</h3>
+          <p>مواد الشهادة الإعدادية</p>
+        </div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     SECTION SCREEN (courses / subjects tabs)
+══════════════════════════════════════ -->
+<div id="screen-section" class="screen">
+  <div class="topbar">
+    <button class="topbar-back" onclick="goBack('main')">← رجوع</button>
+    <div class="topbar-logo" id="section-topbar-title">بكالوريا علمي</div>
+    <div style="width:60px"></div>
+  </div>
+  <div class="breadcrumb" id="section-breadcrumb">بكالوريا علمي</div>
+
+  <!-- Lock Banner -->
+  <div id="section-locked-banner" class="lock-banner" style="display:none">
+    <div class="lock-banner-inner">
+      <span>🔒</span>
+      <p>هذا القسم مقفول — أدخل كود التفعيل</p>
+      <div class="lock-input-row">
+        <input type="text" id="unlock-input" placeholder="XXXX-XXXX-XXXX">
+        <button onclick="tryUnlock()">فتح</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="sec-tabs">
+    <button class="sec-tab active" onclick="switchSectionTab('courses')">📅 الدورات</button>
+    <button class="sec-tab" onclick="switchSectionTab('subjects')">📖 المواد</button>
+  </div>
+
+  <div class="content" style="padding-top:8px">
+    <div id="tab-courses" class="sec-tab-content">
+      <div id="courses-list"></div>
+    </div>
+    <div id="tab-subjects" class="sec-tab-content" style="display:none">
+      <div id="section-subjects-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     COURSE SUBJECTS SCREEN
+══════════════════════════════════════ -->
+<div id="screen-course-subjects" class="screen">
+  <div class="topbar">
+    <button class="topbar-back" onclick="goBack('section')">← رجوع</button>
+    <div class="topbar-logo" id="course-subjects-title">الدورة</div>
+    <div style="width:60px"></div>
+  </div>
+  <div class="breadcrumb" id="course-bc"></div>
+  <div class="content">
+    <div class="course-date-badge" id="course-subjects-date"></div>
+    <div id="course-subjects-list"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     LESSONS SCREEN
+══════════════════════════════════════ -->
+<div id="screen-lessons" class="screen">
+  <div class="topbar">
+    <button class="topbar-back" onclick="goBack('section')">← رجوع</button>
+    <div class="topbar-logo" id="lessons-title">المادة</div>
+    <div style="width:60px"></div>
+  </div>
+  <div class="breadcrumb" id="lessons-bc"></div>
+  <div class="content">
+    <div id="lessons-list"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     QUESTIONS SCREEN
+══════════════════════════════════════ -->
+<div id="screen-questions" class="screen">
+  <div class="topbar">
+    <button class="topbar-back" onclick="history.back()">← رجوع</button>
+    <div class="topbar-logo" id="questions-title">الأسئلة</div>
+    <div style="width:60px"></div>
+  </div>
+  <div class="breadcrumb" id="questions-bc"></div>
+  <div class="content">
+    <div class="questions-header">
+      <span class="q-count" id="q-count-label">0 سؤال</span>
+      <span style="font-size:12px;color:var(--muted)">اضغط على السؤال لعرض الجواب</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+    <div id="questions-container"></div>
+  </div>
+  <button class="bookmark-btn-float" onclick="showBookmarks()">
+    🔖 المحفوظات <span class="bookmark-badge" id="bookmark-count">0</span>
+  </button>
+</div>
+
+<!-- ══════════════════════════════════════
+     BOOKMARKS MODAL
+══════════════════════════════════════ -->
+<div class="modal-overlay" id="bookmarks-modal" onclick="hideBookmarks(event)">
+  <div class="modal-sheet">
+    <div class="modal-title">🔖 المحفوظات <button class="modal-close" onclick="hideBookmarks()">✕</button></div>
+    <div id="bookmarks-content"></div>
+  </div>
+</div>
+
+<style>
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+:root {
+  --navy: #0a1628; --navy-mid: #0d2247; --blue: #1040a0;
+  --gold: #f0a500; --white: #fff;
+  --gray: #f0f4fa; --gray-mid: #d8e2f4;
+  --text: #0a1628; --muted: #5a6a8a;
+  --radius: 16px; --shadow: 0 4px 24px rgba(10,22,40,0.13);
+}
+body { font-family:'Cairo',sans-serif; background:var(--gray); color:var(--text); min-height:100vh; }
+
+/* ── SCREENS ── */
+.screen { display:none; min-height:100vh; flex-direction:column; }
+.screen.active { display:flex; }
+
+/* ── TOPBAR ── */
+.topbar {
+  background:var(--navy); color:#fff; padding:14px 16px;
+  display:flex; align-items:center; justify-content:space-between;
+  position:sticky; top:0; z-index:100;
+  box-shadow:0 2px 12px rgba(10,22,40,0.25);
+}
+.topbar-logo { font-size:15px; font-weight:700; }
+.topbar-back {
+  background:rgba(255,255,255,0.12); border:none; color:#fff;
+  padding:6px 12px; border-radius:8px; font-family:'Cairo',sans-serif;
+  font-size:13px; cursor:pointer;
+}
+.profile-btn {
+  background:rgba(255,255,255,0.12); border:none; cursor:pointer;
+  padding:7px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  transition:background .2s;
+}
+.profile-btn:hover { background:rgba(255,255,255,0.25); }
+.breadcrumb { background:#fff; padding:8px 16px; font-size:12px; color:var(--muted); border-bottom:1px solid var(--gray-mid); }
+.content { padding:16px; flex:1; }
+
+/* ── AUTH ── */
+#screen-auth { background:#fff; align-items:stretch; justify-content:flex-start; }
+.auth-header {
+  height:280px; background:linear-gradient(135deg,#1a3a6e,var(--navy));
+  border-radius:0 0 60px 60px; display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  box-shadow:0 8px 30px rgba(10,22,40,0.35);
+  position:relative; overflow:hidden; flex-shrink:0;
+  transition:height .55s cubic-bezier(.4,0,.2,1), border-radius .55s cubic-bezier(.4,0,.2,1);
+}
+.auth-header.collapsed { height:160px; border-radius:0 0 40px 40px; }
+.auth-header .bubble {
+  position:absolute; border-radius:50%; background:rgba(255,255,255,0.07);
+  animation:floatBubble linear infinite;
+}
+.bubble:nth-child(1){width:180px;height:180px;top:-60px;right:-50px;animation-duration:6s}
+.bubble:nth-child(2){width:100px;height:100px;top:20px;right:30px;animation-duration:4s;animation-delay:1s}
+.bubble:nth-child(3){width:70px;height:70px;bottom:-20px;left:40px;animation-duration:5s;animation-delay:.5s}
+.bubble:nth-child(4){width:50px;height:50px;top:60px;left:20px;animation-duration:7s;animation-delay:2s}
+@keyframes floatBubble{0%{transform:translateY(0) scale(1)}50%{transform:translateY(-14px) scale(1.04)}100%{transform:translateY(0) scale(1)}}
+.auth-header-logo {
+  width:74px;height:74px;border-radius:50%;background:rgba(255,255,255,0.18);
+  display:flex;align-items:center;justify-content:center;margin-bottom:14px;
+  box-shadow:0 4px 20px rgba(0,0,0,0.15);position:relative;z-index:1;
+  animation:pulseRing 2.8s ease-in-out infinite;
+  transition:width .5s,height .5s,margin-bottom .5s;
+}
+.auth-header.collapsed .auth-header-logo{width:50px;height:50px;margin-bottom:8px}
+@keyframes pulseRing{0%{box-shadow:0 0 0 0 rgba(255,255,255,0.25)}60%{box-shadow:0 0 0 14px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+.auth-header-sub{color:rgba(255,255,255,0.75);font-size:13px;margin:0;position:relative;z-index:1;font-weight:500;transition:opacity .3s,transform .3s,max-height .4s;max-height:40px;}
+.auth-header.collapsed .auth-header-sub{opacity:0;transform:translateY(-8px);max-height:0}
+.auth-body{padding:28px 24px 24px;flex:1;display:flex;flex-direction:column}
+.auth-screen-title{font-size:26px;font-weight:900;color:var(--navy);margin:0 0 4px}
+.auth-screen-sub{color:var(--muted);font-size:13px;margin:0 0 20px}
+.auth-tabs{display:flex;background:var(--gray);border-radius:12px;padding:4px;margin-bottom:24px;gap:0;position:relative}
+.auth-tabs::before{content:'';position:absolute;top:4px;bottom:4px;width:calc(50% - 4px);right:4px;background:var(--navy);border-radius:10px;box-shadow:0 2px 10px rgba(10,22,40,0.2);transition:right .4s cubic-bezier(.4,0,.2,1)}
+.auth-tabs.on-register::before{right:calc(50%)}
+.auth-tab{flex:1;padding:10px;text-align:center;color:var(--muted);font-size:14px;font-weight:700;border-radius:10px;cursor:pointer;font-family:'Cairo',sans-serif;background:none;border:none;position:relative;z-index:1;transition:color .3s}
+.auth-tab.active{color:#fff}
+.auth-forms-wrap{position:relative;flex:1;overflow:hidden;min-height:320px}
+.form-panel{position:absolute;top:0;left:0;right:0;transition:transform .48s cubic-bezier(.4,0,.2,1),opacity .38s cubic-bezier(.4,0,.2,1)}
+#form-login{transform:translateY(0);opacity:1;pointer-events:auto}
+#form-register{transform:translateY(55px);opacity:0;pointer-events:none}
+.auth-forms-wrap.show-register #form-login{transform:translateY(-55px);opacity:0;pointer-events:none}
+.auth-forms-wrap.show-register #form-register{transform:translateY(0);opacity:1;pointer-events:auto}
+.form-group{margin-bottom:20px}
+.field-row{display:flex;align-items:center;border-bottom:2px solid var(--gray-mid);padding-bottom:8px;transition:border-color .2s}
+.field-row:focus-within{border-color:var(--blue)}
+.field-icon{margin-left:10px;flex-shrink:0;display:flex;align-items:center}
+.field-row:focus-within .field-icon svg{stroke:var(--blue)}
+.form-group input{flex:1;border:none;outline:none;font-family:'Cairo',sans-serif;font-size:14px;color:var(--text);background:transparent;padding:0;direction:rtl}
+.form-group input::placeholder{color:#bbb}
+.toggle-pass{background:none;border:none;cursor:pointer;color:#bbb;font-size:16px;padding:0 2px}
+.forgot-link{text-align:left;margin-bottom:28px}
+.forgot-link a{color:var(--blue);font-size:12px;font-weight:600;text-decoration:none}
+.btn-primary{width:100%;padding:14px;background:linear-gradient(135deg,#1a3a6e,var(--blue));border:none;border-radius:14px;color:#fff;font-family:'Cairo',sans-serif;font-size:15px;font-weight:900;cursor:pointer;transition:all .2s;box-shadow:0 6px 20px rgba(16,64,160,0.35)}
+.btn-primary:hover{transform:translateY(-1px)}
+.auth-divider{display:flex;align-items:center;gap:12px;margin:20px 0}
+.auth-divider::before,.auth-divider::after{content:'';flex:1;height:1px;background:var(--gray-mid)}
+.auth-divider span{color:#ccc;font-size:12px}
+.auth-switch{text-align:center;font-size:13px;color:var(--muted)}
+.auth-switch a{color:var(--blue);font-weight:700;text-decoration:none}
+
+/* ── MAIN / WELCOME ── */
+.welcome-banner{background:linear-gradient(135deg,#1a3a6e,var(--navy));border-radius:var(--radius);padding:20px;color:#fff;margin-bottom:20px}
+.welcome-banner h2{font-size:20px;font-weight:900;margin-bottom:4px}
+.welcome-banner p{font-size:13px;opacity:.8}
+.section-title{font-size:14px;font-weight:700;color:var(--muted);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
+.division-cards{display:flex;flex-direction:column;gap:12px}
+.division-card{background:#fff;border-radius:var(--radius);padding:18px 16px;display:flex;align-items:center;gap:14px;box-shadow:var(--shadow);cursor:pointer;transition:transform .15s,box-shadow .15s;border-right:4px solid transparent}
+.division-card:hover{transform:translateX(-2px);box-shadow:0 6px 28px rgba(10,22,40,0.16)}
+.division-card.sci{border-right-color:#1040a0}
+.division-card.lit{border-right-color:#e67e22}
+.division-card.ninth{border-right-color:#27ae60}
+.div-icon{font-size:28px;flex-shrink:0}
+.div-info{flex:1}
+.div-info h3{font-size:16px;font-weight:800;color:var(--navy)}
+.div-info p{font-size:12px;color:var(--muted);margin-top:2px}
+
+/* ── SECTION TABS ── */
+.sec-tabs{display:flex;background:var(--gray-mid);padding:4px;gap:4px;margin:0 16px 0;border-radius:12px;margin-top:12px}
+.sec-tab{flex:1;padding:10px;border:none;border-radius:10px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;cursor:pointer;background:none;color:var(--muted);transition:all .25s}
+.sec-tab.active{background:#fff;color:var(--navy);box-shadow:0 2px 8px rgba(10,22,40,0.1)}
+
+/* ── LOCK BANNER ── */
+.lock-banner{background:linear-gradient(135deg,#1a1a2e,#16213e);padding:16px;margin:12px 16px;border-radius:var(--radius)}
+.lock-banner-inner{color:#fff;text-align:center}
+.lock-banner-inner span{font-size:32px}
+.lock-banner-inner p{font-size:14px;margin:8px 0 12px;opacity:.85}
+.lock-input-row{display:flex;gap:8px}
+.lock-input-row input{flex:1;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-family:'Cairo',sans-serif;font-size:14px;outline:none;text-align:center;letter-spacing:1px}
+.lock-input-row input::placeholder{color:rgba(255,255,255,0.4)}
+.lock-input-row button{padding:10px 18px;background:var(--gold);border:none;border-radius:8px;font-family:'Cairo',sans-serif;font-weight:700;cursor:pointer;font-size:14px}
+
+/* ── COURSE CARDS ── */
+.course-card{background:#fff;border-radius:14px;padding:16px;display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;box-shadow:var(--shadow);cursor:pointer;transition:transform .15s}
+.course-card:hover{transform:translateX(-2px)}
+.course-date{font-size:12px;color:var(--muted);margin-bottom:4px}
+.course-name{font-size:15px;font-weight:800;color:var(--navy)}
+.course-card-right{display:flex;align-items:center;gap:8px}
+.course-date-badge{background:var(--gray);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;color:var(--navy);display:inline-block;margin-bottom:14px}
+
+/* ── SUBJECT CARDS ── */
+.subject-card{background:#fff;border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:12px;margin-bottom:10px;box-shadow:var(--shadow);cursor:pointer;transition:transform .15s}
+.subject-card:hover{transform:translateX(-2px)}
+.subject-icon{font-size:24px;flex-shrink:0}
+.subject-info{flex:1}
+.subject-info h4{font-size:15px;font-weight:800;color:var(--navy)}
+.subject-info p{font-size:12px;color:var(--muted);margin-top:2px}
+
+/* ── LESSON CARDS ── */
+.lesson-card{background:#fff;border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:12px;margin-bottom:10px;box-shadow:var(--shadow);cursor:pointer;transition:transform .15s}
+.lesson-card:hover{transform:translateX(-2px)}
+.lesson-num{width:36px;height:36px;border-radius:50%;background:var(--navy);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0}
+.lesson-info{flex:1}
+.lesson-info h4{font-size:15px;font-weight:800;color:var(--navy)}
+.lesson-info p{font-size:12px;color:var(--muted);margin-top:2px}
+
+/* ── BADGES ── */
+.badge-free{background:#e8f5e9;color:#2e7d32;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px}
+.badge-paid{background:#fff3e0;color:#e65100;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px}
+.course-badge{background:var(--navy);color:#fff;font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700}
+
+/* ── QUESTIONS ── */
+.questions-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.q-count{font-size:13px;font-weight:700;color:var(--navy);background:var(--gray);padding:4px 10px;border-radius:8px}
+.progress-bar{height:4px;background:var(--gray-mid);border-radius:2px;margin-bottom:16px;overflow:hidden}
+.progress-fill{height:100%;background:var(--blue);border-radius:2px;transition:width .4s}
+.question-card{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:var(--shadow);transition:box-shadow .2s}
+.question-card.revealed{box-shadow:0 4px 20px rgba(16,64,160,0.12)}
+.q-header{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.q-label{font-size:11px;font-weight:700;color:var(--muted);background:var(--gray);padding:3px 8px;border-radius:6px}
+.q-text{font-size:14px;line-height:1.7;color:var(--text);margin-bottom:10px}
+.q-img{width:100%;border-radius:10px;margin:8px 0;display:block}
+.q-actions{margin-top:10px}
+.btn-reveal{background:var(--gray);border:none;border-radius:8px;padding:9px 16px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;cursor:pointer;color:var(--navy);transition:all .2s}
+.btn-reveal:hover{background:var(--navy);color:#fff}
+.btn-save{background:none;border:none;cursor:pointer;font-size:16px;margin-right:auto;padding:0}
+.btn-save.saved{filter:drop-shadow(0 0 4px #f0a500)}
+.answer-box{max-height:0;overflow:hidden;transition:max-height .4s cubic-bezier(.4,0,.2,1),padding .3s}
+.answer-box.show{max-height:600px;padding:14px;background:linear-gradient(135deg,#e8f5e9,#f1f8e9);border-radius:10px;margin-top:10px}
+.a-label{font-size:11px;font-weight:700;color:#2e7d32;margin-bottom:8px}
+.a-text{font-size:14px;line-height:1.7;color:var(--text)}
+
+/* ── BOOKMARK FLOAT ── */
+.bookmark-btn-float{position:fixed;bottom:20px;left:16px;background:var(--navy);color:#fff;border:none;border-radius:12px;padding:10px 16px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:8px;box-shadow:0 4px 16px rgba(10,22,40,0.3);z-index:50}
+.bookmark-badge{background:var(--gold);color:var(--navy);border-radius:10px;padding:1px 6px;font-size:11px;font-weight:900}
+
+/* ── MODAL ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(10,22,40,0.6);z-index:200;display:none;align-items:flex-end}
+.modal-overlay.open{display:flex}
+.modal-sheet{background:#fff;border-radius:24px 24px 0 0;width:100%;padding:20px;max-height:75vh;overflow-y:auto}
+.modal-title{font-size:16px;font-weight:900;color:var(--navy);display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.modal-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--muted)}
+
+/* ── UTILS ── */
+.loading{text-align:center;padding:40px;color:var(--muted);font-size:14px}
+.empty-state{text-align:center;padding:48px 24px;color:var(--muted)}
+.es-icon{font-size:42px;margin-bottom:12px}
+.empty-state p{font-size:14px;line-height:1.6}
+</style>
+<!-- Forgot Password Modal -->
+<div id="modal-forgot" class="modal-overlay" onclick="hideForgotPassword(event)" style="display:none">
+  <div class="modal-sheet" onclick="event.stopPropagation()">
+    <div class="modal-title">🔑 نسيت كلمة المرور <button class="modal-close" onclick="hideForgotPassword()">✕</button></div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:16px">رح نبعتلك رابط لإعادة تعيين كلمة المرور</p>
+    <div class="form-group">
+      <div class="field-row">
+        <input type="email" id="forgot-email" placeholder="البريد الإلكتروني" style="flex:1;border:none;outline:none;font-family:Cairo,sans-serif;font-size:14px;direction:rtl">
+      </div>
+    </div>
+    <div id="forgot-msg" style="font-size:13px;margin:10px 0;text-align:center"></div>
+    <button id="forgot-btn" class="btn-primary" onclick="sendResetEmail()" style="margin-top:8px">إرسال</button>
+  </div>
+</div>
+
+<!-- Profile Modal -->
+<div id="modal-profile" class="modal-overlay" onclick="hideProfile(event)" style="display:none">
+  <div class="modal-sheet" onclick="event.stopPropagation()">
+    <div class="modal-title">👤 بياناتي <button class="modal-close" onclick="hideProfile()">✕</button></div>
+
+    <div class="form-group" style="margin-bottom:16px">
+      <label style="font-size:12px;color:var(--muted);font-weight:700">البريد الإلكتروني</label>
+      <p id="profile-email-show" style="font-size:14px;color:var(--text);padding:8px 0;border-bottom:1px solid var(--gray-mid)"></p>
+    </div>
+
+    <div class="form-group" style="margin-bottom:16px">
+      <label style="font-size:12px;color:var(--muted);font-weight:700">الاسم</label>
+      <div class="field-row">
+        <input type="text" id="profile-name-input" placeholder="اسمك الكامل" style="flex:1;border:none;outline:none;font-family:Cairo,sans-serif;font-size:14px;direction:rtl">
+      </div>
+    </div>
+
+    <button onclick="toggleChangePass()" style="background:none;border:none;color:var(--blue);font-family:Cairo,sans-serif;font-size:13px;font-weight:700;cursor:pointer;padding:0;margin-bottom:12px">
+      🔒 تغيير كلمة المرور
+    </button>
+
+    <div id="profile-pass-section" style="display:none">
+      <div class="form-group" style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--muted);font-weight:700">كلمة المرور الجديدة</label>
+        <div class="field-row">
+          <input type="password" id="profile-new-pass" placeholder="كلمة المرور الجديدة (6+)" style="flex:1;border:none;outline:none;font-family:Cairo,sans-serif;font-size:14px;direction:rtl">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom:16px">
+      <label style="font-size:12px;color:var(--muted);font-weight:700">كلمة المرور الحالية <span style="color:#e74c3c">*</span></label>
+      <div class="field-row">
+        <input type="password" id="profile-current-pass" placeholder="مطلوبة للتأكيد" style="flex:1;border:none;outline:none;font-family:Cairo,sans-serif;font-size:14px;direction:rtl">
+      </div>
+    </div>
+
+    <div id="profile-msg" style="font-size:13px;margin-bottom:10px;text-align:center"></div>
+    <button id="profile-save-btn" class="btn-primary" onclick="saveProfile()">حفظ</button>
+  </div>
+</div>
+
+</body>
+</html>

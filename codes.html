@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>توليد أكواد التفعيل — المعارف</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, getDocs, getDoc, setDoc, deleteDoc, query, orderBy }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAAZpDjainzHI25ILq6KqDhIuwGbu4PEM4",
+  authDomain: "ma3arf.firebaseapp.com",
+  projectId: "ma3arf",
+  storageBucket: "ma3arf.firebasestorage.app",
+  messagingSenderId: "113548214837",
+  appId: "1:113548214837:web:c044564d446800ffe6e77c"
+};
+
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
+
+const SECTIONS = { sci:'بكالوريا علمي', lit:'بكالوريا أدبي', ninth:'الصف التاسع' };
+
+// ── Auth ──
+onAuthStateChanged(auth, user => {
+  document.getElementById('login-wrap').style.display  = user ? 'none'  : 'flex';
+  document.getElementById('app-wrap').style.display    = user ? 'block' : 'none';
+  if(user) loadCodes();
+});
+
+window.doLogin = async () => {
+  const e=document.getElementById('l-email').value.trim();
+  const p=document.getElementById('l-pass').value;
+  const err=document.getElementById('l-err');
+  err.textContent='';
+  try { await signInWithEmailAndPassword(auth,e,p); }
+  catch(ex){ err.textContent='بيانات غير صحيحة'; }
+};
+
+// ── Generate ──
+window.generateCode = async () => {
+  const type    = document.getElementById('code-type').value;
+  const section = document.getElementById('code-section').value;
+  const subject = document.getElementById('code-subject').value.trim();
+  const expires = document.getElementById('code-expires').value;
+  const qty     = parseInt(document.getElementById('code-qty').value)||1;
+
+  const generated = [];
+  for(let i=0;i<qty;i++){
+    const rand   = Math.random().toString(36).substring(2,9).toUpperCase();
+    const prefix = section.toUpperCase().substring(0,3);
+    const code   = `${prefix}-${rand}`;
+    const data   = { type, section, subject:subject||null, expires:expires||null, used:false, createdAt: new Date().toISOString() };
+    await setDoc(doc(db,'activation_codes',code), data);
+    generated.push(code);
+  }
+
+  // Show
+  const box = document.getElementById('generated-box');
+  box.innerHTML = generated.map(c=>`
+    <div class="code-row">
+      <span class="code-text">${c}</span>
+      <button onclick="copyOne('${c}')">📋</button>
+    </div>`).join('');
+  document.getElementById('generated-wrap').style.display='block';
+  document.getElementById('copy-all-btn').style.display = qty>1 ? 'inline-block':'none';
+  window._lastCodes = generated;
+  loadCodes();
+};
+
+window.copyOne = (code) => {
+  navigator.clipboard.writeText(code).then(()=>{ showToast('تم النسخ ✅'); });
+};
+window.copyAll = () => {
+  navigator.clipboard.writeText(window._lastCodes.join('\n')).then(()=>showToast('تم نسخ الكل ✅'));
+};
+
+function showToast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2000);
+}
+
+// ── Load codes history ──
+async function loadCodes(){
+  const list=document.getElementById('codes-list');
+  list.innerHTML='<div class="ld">جاري التحميل...</div>';
+  const filter = document.getElementById('filter-status')?.value||'all';
+  const snap=await getDocs(collection(db,'activation_codes'));
+  let rows=[];
+  snap.forEach(d=>rows.push({id:d.id,...d.data()}));
+  rows.sort((a,b)=>b.createdAt?.localeCompare(a.createdAt||'')||0);
+  if(filter==='available') rows=rows.filter(r=>!r.used);
+  if(filter==='used')      rows=rows.filter(r=>r.used);
+  list.innerHTML='';
+  if(!rows.length){ list.innerHTML='<div class="ld">لا توجد أكواد</div>'; return; }
+  rows.forEach(r=>{
+    list.insertAdjacentHTML('beforeend',`
+      <div class="code-card ${r.used?'used':''}">
+        <div class="code-card-top">
+          <span class="code-big">${r.id}</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn-copy-small" onclick="copyOne('${r.id}')">📋</button>
+            <button class="btn-del-small"  onclick="deleteCode('${r.id}')">🗑️</button>
+          </div>
+        </div>
+        <div class="code-meta">
+          <span class="meta-tag">${r.type==='section'?'🔓 قسم':'📖 مادة'}</span>
+          <span class="meta-tag">${SECTIONS[r.section]||r.section}</span>
+          ${r.subject?`<span class="meta-tag">📚 ${r.subject}</span>`:''}
+          ${r.expires?`<span class="meta-tag">⏳ ${r.expires}</span>`:''}
+          <span class="status-tag ${r.used?'used':'avail'}">${r.used?'مستخدم':'متاح'}</span>
+        </div>
+      </div>`);
+  });
+}
+
+window.deleteCode=async(id)=>{
+  if(!confirm('حذف الكود '+id+'؟')) return;
+  await deleteDoc(doc(db,'activation_codes',id));
+  loadCodes();
+};
+
+window.filterCodes=()=>loadCodes();
+</script>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login-wrap" style="display:flex;min-height:100vh;align-items:center;justify-content:center;background:#0a1628">
+  <div class="login-box">
+    <div style="font-size:40px;text-align:center;margin-bottom:8px">🔑</div>
+    <h2>توليد أكواد التفعيل</h2>
+    <input id="l-email" type="email" placeholder="البريد الإلكتروني" class="inp">
+    <input id="l-pass"  type="password" placeholder="كلمة المرور" class="inp">
+    <div id="l-err" class="err"></div>
+    <button onclick="doLogin()" class="btn-login">دخول</button>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app-wrap" style="display:none">
+  <div class="header">
+    <h1>🔑 توليد أكواد التفعيل</h1>
+    <span style="font-size:12px;opacity:.6">منصة المعارف</span>
+  </div>
+
+  <div class="container">
+
+    <!-- Generator -->
+    <div class="card">
+      <h2 class="card-title">⚡ توليد كود جديد</h2>
+
+      <div class="form-grid">
+        <div class="form-col">
+          <label>نوع الكود</label>
+          <select id="code-type" class="sel">
+            <option value="section">🔓 قسم كامل</option>
+            <option value="subject">📖 مادة محددة</option>
+          </select>
+
+          <label>القسم</label>
+          <select id="code-section" class="sel">
+            <option value="sci">بكالوريا علمي</option>
+            <option value="lit">بكالوريا أدبي</option>
+            <option value="ninth">الصف التاسع</option>
+          </select>
+
+          <label>اسم المادة <span class="muted">(اختياري — للنوع: مادة)</span></label>
+          <input id="code-subject" type="text" placeholder="مثال: الرياضيات" class="inp">
+        </div>
+
+        <div class="form-col">
+          <label>تاريخ الانتهاء <span class="muted">(اختياري)</span></label>
+          <input id="code-expires" type="date" class="inp">
+
+          <label>عدد الأكواد</label>
+          <div class="qty-row">
+            <button onclick="changeQty(-1)">−</button>
+            <input id="code-qty" type="number" value="1" min="1" max="100" class="inp qty-inp">
+            <button onclick="changeQty(1)">+</button>
+          </div>
+
+          <button onclick="generateCode()" class="btn-gen">⚡ توليد</button>
+        </div>
+      </div>
+
+      <!-- Generated codes -->
+      <div id="generated-wrap" style="display:none;margin-top:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <h3 style="font-size:15px;color:var(--navy)">الأكواد المولّدة</h3>
+          <button id="copy-all-btn" onclick="copyAll()" class="btn-copy-all" style="display:none">📋 نسخ الكل</button>
+        </div>
+        <div id="generated-box"></div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="card" style="margin-top:20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <h2 class="card-title" style="margin:0">📋 سجل الأكواد</h2>
+        <select id="filter-status" class="sel" style="width:auto;padding:6px 10px" onchange="filterCodes()">
+          <option value="all">الكل</option>
+          <option value="available">متاح فقط</option>
+          <option value="used">مستخدم فقط</option>
+        </select>
+      </div>
+      <div id="codes-list"></div>
+    </div>
+
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--navy:#0a1628;--blue:#1040a0;--gold:#f0a500;--gray:#f0f4fa;--gray-mid:#d8e2f4;--muted:#5a6a8a}
+body{font-family:'Cairo',sans-serif;background:var(--gray);color:var(--navy);min-height:100vh}
+
+/* Login */
+.login-box{background:#fff;border-radius:20px;padding:32px;width:320px}
+.login-box h2{font-size:18px;font-weight:900;margin-bottom:20px;text-align:center}
+.btn-login{width:100%;padding:13px;background:linear-gradient(135deg,#1a3a6e,var(--blue));border:none;border-radius:12px;color:#fff;font-family:'Cairo',sans-serif;font-size:15px;font-weight:900;cursor:pointer;margin-top:8px}
+.err{color:#e74c3c;font-size:12px;margin:6px 0;text-align:center}
+
+/* Header */
+.header{background:var(--navy);color:#fff;padding:16px 20px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:18px;font-weight:900}
+
+/* Container */
+.container{max-width:800px;margin:0 auto;padding:20px 16px}
+.card{background:#fff;border-radius:16px;padding:20px;box-shadow:0 4px 20px rgba(10,22,40,0.08)}
+.card-title{font-size:16px;font-weight:900;color:var(--navy);margin-bottom:16px}
+
+/* Form */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.form-col{display:flex;flex-direction:column;gap:4px}
+.form-col label{font-size:13px;font-weight:700;color:var(--navy);margin-top:10px}
+.form-col label:first-child{margin-top:0}
+.inp{width:100%;padding:10px 12px;border:1.5px solid var(--gray-mid);border-radius:10px;font-family:'Cairo',sans-serif;font-size:14px;outline:none;transition:border-color .2s;margin-top:4px}
+.inp:focus{border-color:var(--blue)}
+.sel{width:100%;padding:10px 12px;border:1.5px solid var(--gray-mid);border-radius:10px;font-family:'Cairo',sans-serif;font-size:14px;outline:none;background:#fff;margin-top:4px}
+.qty-row{display:flex;gap:8px;align-items:center;margin-top:4px}
+.qty-row button{width:36px;height:36px;border:none;border-radius:8px;background:var(--gray-mid);font-size:18px;cursor:pointer;font-weight:700;flex-shrink:0}
+.qty-inp{flex:1;text-align:center}
+.btn-gen{margin-top:16px;padding:13px;background:linear-gradient(135deg,#1a3a6e,var(--blue));border:none;border-radius:12px;color:#fff;font-family:'Cairo',sans-serif;font-size:15px;font-weight:900;cursor:pointer;width:100%;box-shadow:0 4px 16px rgba(16,64,160,0.3)}
+
+/* Generated codes */
+.code-row{display:flex;align-items:center;justify-content:space-between;background:var(--gray);border-radius:10px;padding:10px 14px;margin-bottom:8px}
+.code-text{font-size:18px;font-weight:900;letter-spacing:2px;color:var(--navy)}
+.code-row button{background:var(--blue);border:none;border-radius:8px;color:#fff;padding:6px 10px;cursor:pointer;font-size:14px}
+.btn-copy-all{background:var(--navy);border:none;border-radius:8px;color:#fff;padding:7px 14px;cursor:pointer;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700}
+
+/* Code cards */
+.code-card{background:var(--gray);border-radius:12px;padding:14px;margin-bottom:10px;border-right:4px solid var(--blue);transition:opacity .2s}
+.code-card.used{border-right-color:var(--gray-mid);opacity:.6}
+.code-card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.code-big{font-size:17px;font-weight:900;letter-spacing:1.5px;color:var(--navy)}
+.code-meta{display:flex;flex-wrap:wrap;gap:6px}
+.meta-tag{background:#fff;border:1px solid var(--gray-mid);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--muted)}
+.status-tag{border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700}
+.status-tag.avail{background:#e8f5e9;color:#2e7d32}
+.status-tag.used{background:#ffebee;color:#c62828}
+.btn-copy-small{background:#e3f2fd;border:none;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:13px}
+.btn-del-small{background:#ffebee;border:none;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:13px}
+
+.muted{color:var(--muted);font-size:11px}
+.ld{text-align:center;padding:30px;color:var(--muted)}
+
+/* Toast */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(60px);background:var(--navy);color:#fff;padding:10px 20px;border-radius:10px;font-family:'Cairo',sans-serif;font-size:14px;transition:transform .3s;z-index:999;pointer-events:none}
+.toast.show{transform:translateX(-50%) translateY(0)}
+
+@media(max-width:500px){.form-grid{grid-template-columns:1fr}}
+</style>
+
+<script>
+function changeQty(d){
+  const el=document.getElementById('code-qty');
+  el.value=Math.max(1,Math.min(100,(parseInt(el.value)||1)+d));
+}
+</script>
+</body>
+</html>
