@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>لوحة أدمن — منصة الباك</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+
+<script type="module">
+import { initializeApp }   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, orderBy, serverTimestamp }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+// ══════════════════════════════════════
+//  🔧 نفس إعدادات Firebase
+// ══════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyAAZpDjainzHI25ILq6KqDhIuwGbu4PEM4",
+  authDomain: "ma3arf.firebaseapp.com",
+  projectId: "ma3arf",
+  storageBucket: "ma3arf.firebasestorage.app",
+  messagingSenderId: "113548214837",
+  appId: "1:113548214837:web:c044564d446800ffe6e77c"
+};
+
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
+
+// ══════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════
+const S = {
+  section: 'sci',
+  tab: 'courses',       // 'courses' | 'subjects' | 'codes'
+  courseId: null,
+  subjectId: null,
+  lessonId: null,
+  editingQ: null,       // question being edited
+};
+
+const SECTIONS = { sci:'بكالوريا علمي', lit:'بكالوريا أدبي', ninth:'الصف التاسع' };
+
+// ══════════════════════════════════════
+//  AUTH
+// ══════════════════════════════════════
+onAuthStateChanged(auth, user => {
+  document.getElementById('screen-login').style.display = user ? 'none' : 'flex';
+  document.getElementById('screen-admin').style.display = user ? 'flex' : 'none';
+  if (user) initAdmin();
+});
+
+window.adminLogin = async () => {
+  const e = document.getElementById('a-email').value.trim();
+  const p = document.getElementById('a-pass').value;
+  try {
+    await signInWithEmailAndPassword(auth, e, p);
+  } catch(err) {
+    document.getElementById('a-err').textContent = 'بيانات غير صحيحة';
+  }
+};
+window.adminLogout = () => signOut(auth);
+
+// ══════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════
+function initAdmin() {
+  selectSection('sci');
+}
+
+// ── Section picker ──
+window.selectSection = (s) => {
+  S.section = s;
+  document.querySelectorAll('.sec-btn').forEach(b => b.classList.toggle('active', b.dataset.s === s));
+  document.getElementById('admin-section-label').textContent = SECTIONS[s];
+  openTab(S.tab);
+};
+
+// ── Tab picker ──
+window.openTab = (tab) => {
+  S.tab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.t === tab));
+  document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+  document.getElementById('pane-' + tab).style.display = 'block';
+  if (tab === 'courses')  loadAdminCourses();
+  if (tab === 'subjects') loadAdminSubjects();
+  if (tab === 'codes')    renderCodesPane();
+};
+
+// ══════════════════════════════════════
+//  ① COURSES
+// ══════════════════════════════════════
+async function loadAdminCourses() {
+  const list = document.getElementById('admin-courses-list');
+  list.innerHTML = '<div class="ld">جاري التحميل...</div>';
+  const snap = await getDocs(query(collection(db,'sections',S.section,'courses'), orderBy('date','desc')));
+  list.innerHTML = '';
+  snap.forEach(d => {
+    const c = {id:d.id,...d.data()};
+    list.insertAdjacentHTML('beforeend', `
+      <div class="row-item">
+        <div class="row-info">
+          <strong>${c.name||'دورة'}</strong>
+          <span>${c.date||''}</span>
+          ${c.isFree ? '<span class="badge-free">مجاني</span>' : '<span class="badge-paid">مدفوع</span>'}
+        </div>
+        <div class="row-actions">
+          <button class="btn-sm btn-edit" onclick="editCourse('${c.id}','${c.name}','${c.date}',${c.isFree})">✏️</button>
+          <button class="btn-sm btn-open" onclick="openCourse('${c.id}','${c.name}')">📚 مواد</button>
+          <button class="btn-sm btn-del"  onclick="deleteCourse('${c.id}')">🗑️</button>
+        </div>
+      </div>`);
+  });
+}
+
+window.showAddCourse = () => {
+  document.getElementById('modal-course').style.display='flex';
+  document.getElementById('course-form-id').value='';
+  document.getElementById('course-form-name').value='';
+  document.getElementById('course-form-date').value='';
+  document.getElementById('course-form-free').checked=false;
+  document.getElementById('modal-course-title').textContent='إضافة دورة جديدة';
+};
+window.editCourse = (id,name,date,isFree) => {
+  document.getElementById('modal-course').style.display='flex';
+  document.getElementById('course-form-id').value=id;
+  document.getElementById('course-form-name').value=name;
+  document.getElementById('course-form-date').value=date;
+  document.getElementById('course-form-free').checked=isFree;
+  document.getElementById('modal-course-title').textContent='تعديل الدورة';
+};
+window.saveCourse = async () => {
+  const id   = document.getElementById('course-form-id').value;
+  const name = document.getElementById('course-form-name').value.trim();
+  const date = document.getElementById('course-form-date').value.trim();
+  const isFree = document.getElementById('course-form-free').checked;
+  if (!name) return alert('أدخل اسم الدورة');
+  const data = { name, date, isFree, updatedAt: new Date().toISOString() };
+  if (id) await updateDoc(doc(db,'sections',S.section,'courses',id), data);
+  else    await addDoc(collection(db,'sections',S.section,'courses'), data);
+  closeModal('modal-course');
+  loadAdminCourses();
+};
+window.deleteCourse = async (id) => {
+  if (!confirm('حذف الدورة؟')) return;
+  await deleteDoc(doc(db,'sections',S.section,'courses',id));
+  loadAdminCourses();
+};
+
+// ── Open course → show its subjects ──
+window.openCourse = (courseId, courseName) => {
+  S.courseId = courseId;
+  document.getElementById('course-subjects-pane').style.display = 'block';
+  document.getElementById('course-subjects-header').textContent = '📚 مواد دورة: ' + courseName;
+  loadCourseSubjects();
+};
+window.closeCourseSubjects = () => {
+  document.getElementById('course-subjects-pane').style.display = 'none';
+  S.courseId = null;
+};
+
+async function loadCourseSubjects() {
+  const list = document.getElementById('course-subjects-list-admin');
+  list.innerHTML = '<div class="ld">جاري التحميل...</div>';
+  const snap = await getDocs(collection(db,'sections',S.section,'courses',S.courseId,'subjects'));
+  list.innerHTML='';
+  snap.forEach(d=>{
+    const s={id:d.id,...d.data()};
+    list.insertAdjacentHTML('beforeend',`
+      <div class="row-item">
+        <div class="row-info"><span>${s.icon||'📖'}</span><strong>${s.name}</strong><span class="muted">${s.qCount||0} سؤال</span></div>
+        <div class="row-actions">
+          <button class="btn-sm btn-open" onclick="openCourseQuestions('${s.id}','${s.name}')">❓ أسئلة</button>
+          <button class="btn-sm btn-del"  onclick="deleteCourseSubject('${s.id}')">🗑️</button>
+        </div>
+      </div>`);
+  });
+}
+
+window.showAddCourseSubject = () => { document.getElementById('modal-course-subject').style.display='flex'; };
+window.saveCourseSubject = async () => {
+  const name = document.getElementById('csub-name').value.trim();
+  const icon = document.getElementById('csub-icon').value.trim() || '📖';
+  if (!name) return alert('أدخل اسم المادة');
+  await addDoc(collection(db,'sections',S.section,'courses',S.courseId,'subjects'), { name, icon, qCount:0 });
+  document.getElementById('csub-name').value='';
+  closeModal('modal-course-subject');
+  loadCourseSubjects();
+};
+window.deleteCourseSubject = async (id) => {
+  if (!confirm('حذف المادة؟')) return;
+  await deleteDoc(doc(db,'sections',S.section,'courses',S.courseId,'subjects',id));
+  loadCourseSubjects();
+};
+
+// Course Questions
+window.openCourseQuestions = (subjectId, subjectName) => {
+  S.subjectId = subjectId;
+  document.getElementById('questions-pane').style.display='block';
+  document.getElementById('questions-pane-header').textContent = '❓ أسئلة: ' + subjectName;
+  document.getElementById('questions-pane').dataset.source = 'course';
+  loadQuestions();
+};
+window.closeQuestionsPane = () => {
+  document.getElementById('questions-pane').style.display='none';
+  S.subjectId=null; S.lessonId=null;
+};
+
+// ══════════════════════════════════════
+//  ② SUBJECTS (independent)
+// ══════════════════════════════════════
+async function loadAdminSubjects() {
+  const list = document.getElementById('admin-subjects-list');
+  list.innerHTML='<div class="ld">جاري التحميل...</div>';
+  const snap = await getDocs(collection(db,'sections',S.section,'subjects'));
+  list.innerHTML='';
+  snap.forEach(d=>{
+    const s={id:d.id,...d.data()};
+    list.insertAdjacentHTML('beforeend',`
+      <div class="row-item">
+        <div class="row-info"><span>${s.icon||'📖'}</span><strong>${s.name}</strong>
+          ${s.isFree?'<span class="badge-free">مجاني</span>':'<span class="badge-paid">مدفوع</span>'}
+        </div>
+        <div class="row-actions">
+          <button class="btn-sm btn-edit" onclick="editSubject('${s.id}','${s.name}','${s.icon||'📖'}',${s.isFree})">✏️</button>
+          <button class="btn-sm btn-open" onclick="openSubjectLessons('${s.id}','${s.name}')">📝 دروس</button>
+          <button class="btn-sm btn-del"  onclick="deleteSubject('${s.id}')">🗑️</button>
+        </div>
+      </div>`);
+  });
+}
+
+window.showAddSubject = () => {
+  document.getElementById('modal-subject').style.display='flex';
+  document.getElementById('sub-form-id').value='';
+  document.getElementById('sub-form-name').value='';
+  document.getElementById('sub-form-icon').value='';
+  document.getElementById('sub-form-free').checked=false;
+  document.getElementById('modal-subject-title').textContent='إضافة مادة جديدة';
+};
+window.editSubject = (id,name,icon,isFree) => {
+  document.getElementById('modal-subject').style.display='flex';
+  document.getElementById('sub-form-id').value=id;
+  document.getElementById('sub-form-name').value=name;
+  document.getElementById('sub-form-icon').value=icon;
+  document.getElementById('sub-form-free').checked=isFree;
+  document.getElementById('modal-subject-title').textContent='تعديل المادة';
+};
+window.saveSubject = async () => {
+  const id   = document.getElementById('sub-form-id').value;
+  const name = document.getElementById('sub-form-name').value.trim();
+  const icon = document.getElementById('sub-form-icon').value.trim() || '📖';
+  const isFree = document.getElementById('sub-form-free').checked;
+  if (!name) return alert('أدخل اسم المادة');
+  const data = {name,icon,isFree,lessonCount:0};
+  if (id) await updateDoc(doc(db,'sections',S.section,'subjects',id), data);
+  else    await addDoc(collection(db,'sections',S.section,'subjects'), data);
+  closeModal('modal-subject');
+  loadAdminSubjects();
+};
+window.deleteSubject = async (id) => {
+  if (!confirm('حذف المادة؟')) return;
+  await deleteDoc(doc(db,'sections',S.section,'subjects',id));
+  loadAdminSubjects();
+};
+
+// ── Lessons ──
+window.openSubjectLessons = (subjectId,subjectName) => {
+  S.subjectId = subjectId;
+  document.getElementById('lessons-pane').style.display='block';
+  document.getElementById('lessons-pane-header').textContent='📝 دروس: '+subjectName;
+  loadLessons();
+};
+window.closeLessonsPane = () => {
+  document.getElementById('lessons-pane').style.display='none';
+  S.subjectId=null; S.lessonId=null;
+};
+
+async function loadLessons() {
+  const list=document.getElementById('lessons-list-admin');
+  list.innerHTML='<div class="ld">جاري التحميل...</div>';
+  const snap=await getDocs(query(collection(db,'sections',S.section,'subjects',S.subjectId,'lessons'),orderBy('order')));
+  list.innerHTML='';
+  snap.forEach(d=>{
+    const l={id:d.id,...d.data()};
+    list.insertAdjacentHTML('beforeend',`
+      <div class="row-item">
+        <div class="row-info">
+          <span class="order-badge">${l.order||''}</span>
+          <strong>${l.name}</strong>
+          <span class="muted">${l.qCount||0} سؤال</span>
+        </div>
+        <div class="row-actions">
+          <button class="btn-sm btn-edit" onclick="editLesson('${l.id}','${l.name}',${l.order||0})">✏️</button>
+          <button class="btn-sm btn-open" onclick="openLessonQuestions('${l.id}','${l.name}')">❓ أسئلة</button>
+          <button class="btn-sm btn-del"  onclick="deleteLesson('${l.id}')">🗑️</button>
+        </div>
+      </div>`);
+  });
+}
+window.showAddLesson = ()=>{
+  document.getElementById('modal-lesson').style.display='flex';
+  document.getElementById('lesson-form-id').value='';
+  document.getElementById('lesson-form-name').value='';
+  document.getElementById('lesson-form-order').value='';
+  document.getElementById('modal-lesson-title').textContent='إضافة درس جديد';
+};
+window.editLesson=(id,name,order)=>{
+  document.getElementById('modal-lesson').style.display='flex';
+  document.getElementById('lesson-form-id').value=id;
+  document.getElementById('lesson-form-name').value=name;
+  document.getElementById('lesson-form-order').value=order;
+  document.getElementById('modal-lesson-title').textContent='تعديل الدرس';
+};
+window.saveLesson=async()=>{
+  const id=document.getElementById('lesson-form-id').value;
+  const name=document.getElementById('lesson-form-name').value.trim();
+  const order=parseInt(document.getElementById('lesson-form-order').value)||0;
+  if(!name) return alert('أدخل اسم الدرس');
+  const data={name,order,qCount:0};
+  if(id) await updateDoc(doc(db,'sections',S.section,'subjects',S.subjectId,'lessons',id),data);
+  else   await addDoc(collection(db,'sections',S.section,'subjects',S.subjectId,'lessons'),data);
+  closeModal('modal-lesson');
+  loadLessons();
+};
+window.deleteLesson=async(id)=>{
+  if(!confirm('حذف الدرس؟')) return;
+  await deleteDoc(doc(db,'sections',S.section,'subjects',S.subjectId,'lessons',id));
+  loadLessons();
+};
+window.openLessonQuestions=(lessonId,lessonName)=>{
+  S.lessonId=lessonId;
+  document.getElementById('questions-pane').style.display='block';
+  document.getElementById('questions-pane-header').textContent='❓ أسئلة: '+lessonName;
+  document.getElementById('questions-pane').dataset.source='lesson';
+  loadQuestions();
+};
+
+// ══════════════════════════════════════
+//  ③ QUESTIONS (shared for course & lesson)
+// ══════════════════════════════════════
+function getQPath() {
+  const src = document.getElementById('questions-pane').dataset.source;
+  if (src==='course')
+    return collection(db,'sections',S.section,'courses',S.courseId,'subjects',S.subjectId,'questions');
+  return collection(db,'sections',S.section,'subjects',S.subjectId,'lessons',S.lessonId,'questions');
+}
+function getQDocPath(qId) {
+  const src = document.getElementById('questions-pane').dataset.source;
+  if (src==='course')
+    return doc(db,'sections',S.section,'courses',S.courseId,'subjects',S.subjectId,'questions',qId);
+  return doc(db,'sections',S.section,'subjects',S.subjectId,'lessons',S.lessonId,'questions',qId);
+}
+
+async function loadQuestions() {
+  const list=document.getElementById('questions-list-admin');
+  list.innerHTML='<div class="ld">جاري التحميل...</div>';
+  const snap=await getDocs(query(getQPath(),orderBy('order')));
+  list.innerHTML='';
+  snap.forEach(d=>{
+    const q={id:d.id,...d.data()};
+    const isLesson = document.getElementById('questions-pane').dataset.source==='lesson';
+    list.insertAdjacentHTML('beforeend',`
+      <div class="q-admin-card">
+        <div class="q-admin-header">
+          <span class="order-badge">س ${q.order||''}</span>
+          ${isLesson&&q.courseRef?`<span class="course-ref-badge">دورة ${q.courseRef}</span>`:''}
+          <div class="row-actions" style="margin-right:auto">
+            <button class="btn-sm btn-edit" onclick="editQuestion('${q.id}')">✏️ تعديل</button>
+            <button class="btn-sm btn-del"  onclick="deleteQuestion('${q.id}')">🗑️</button>
+          </div>
+        </div>
+        <div class="q-admin-body">
+          ${q.text?`<p class="q-preview-text">${q.text}</p>`:''}
+          ${q.imageUrl?`<img class="q-preview-img" src="${q.imageUrl}">`:''}
+        </div>
+        <div class="q-admin-answer">
+          <span class="a-tag">✅ الجواب</span>
+          ${q.answerText?`<p>${q.answerText}</p>`:''}
+          ${q.answerImageUrl?`<img class="q-preview-img" src="${q.answerImageUrl}">`:''}
+        </div>
+      </div>`);
+  });
+}
+
+window.showAddQuestion=()=>{
+  S.editingQ=null;
+  document.getElementById('modal-question').style.display='flex';
+  document.getElementById('modal-q-title').textContent='إضافة سؤال';
+  clearQForm();
+};
+window.editQuestion=async(id)=>{
+  const snap=await getDoc(getQDocPath(id));
+  if(!snap.exists()) return;
+  const q={id:snap.id,...snap.data()};
+  S.editingQ=id;
+  document.getElementById('modal-question').style.display='flex';
+  document.getElementById('modal-q-title').textContent='تعديل السؤال';
+  document.getElementById('q-form-order').value=q.order||'';
+  document.getElementById('q-form-text').value=q.text||'';
+  document.getElementById('q-form-ans-text').value=q.answerText||'';
+  document.getElementById('q-form-course-ref').value=q.courseRef||'';
+  document.getElementById('q-img-url').value=q.imageUrl||'';
+  document.getElementById('ans-img-url').value=q.answerImageUrl||'';
+  const qi=document.getElementById('q-img-preview');
+  const ai=document.getElementById('ans-img-preview');
+  if(q.imageUrl){qi.src=q.imageUrl;qi.style.display='block';}else qi.style.display='none';
+  if(q.answerImageUrl){ai.src=q.answerImageUrl;ai.style.display='block';}else ai.style.display='none';
+};
+function clearQForm(){
+  ['q-form-order','q-form-text','q-form-ans-text','q-form-course-ref','q-img-url','ans-img-url']
+    .forEach(id=>document.getElementById(id).value='');
+  document.getElementById('q-img-preview').style.display='none';
+  document.getElementById('ans-img-preview').style.display='none';
+}
+
+// Image URL preview
+window.previewUrl=(inputId,previewId)=>{
+  const url=document.getElementById(inputId).value.trim();
+  const prev=document.getElementById(previewId);
+  if(url){ prev.src=url; prev.style.display='block'; }
+  else   { prev.style.display='none'; }
+};
+
+window.saveQuestion=async()=>{
+  const order    = parseInt(document.getElementById('q-form-order').value)||0;
+  const text     = document.getElementById('q-form-text').value.trim();
+  const answerText     = document.getElementById('q-form-ans-text').value.trim();
+  const courseRef      = document.getElementById('q-form-course-ref').value.trim();
+  const imageUrl       = document.getElementById('q-img-url').value.trim()||null;
+  const answerImageUrl = document.getElementById('ans-img-url').value.trim()||null;
+
+  if(!text && !imageUrl) return alert('أدخل نص السؤال أو رابط صورة');
+
+  const data={order,text,answerText,imageUrl,answerImageUrl,courseRef:courseRef||null};
+  if(S.editingQ) await updateDoc(getQDocPath(S.editingQ),data);
+  else           await addDoc(getQPath(),data);
+  closeModal('modal-question');
+  loadQuestions();
+};
+
+window.deleteQuestion=async(id)=>{
+  if(!confirm('حذف السؤال؟')) return;
+  await deleteDoc(getQDocPath(id));
+  loadQuestions();
+};
+
+// ══════════════════════════════════════
+//  ④ ACTIVATION CODES
+// ══════════════════════════════════════
+function renderCodesPane() {
+  // just show the generator UI (already in HTML), load used codes
+  loadUsedCodes();
+}
+
+window.generateCode=async()=>{
+  const type    = document.getElementById('code-type').value;
+  const section = document.getElementById('code-section').value;
+  const subject = document.getElementById('code-subject').value.trim();
+  const expires = document.getElementById('code-expires').value;
+
+  // Generate random code: SEC-XXXXXX
+  const rand = Math.random().toString(36).substring(2,8).toUpperCase();
+  const prefix = section.toUpperCase().substring(0,3);
+  const code = `${prefix}-${rand}`;
+
+  const data = {
+    type,       // 'section' | 'subject'
+    section,
+    subject: subject||null,
+    expires: expires||null,
+    used: false,
+    createdAt: new Date().toISOString()
+  };
+
+  await setDoc(doc(db,'activation_codes',code), data);
+  document.getElementById('generated-code-box').textContent = code;
+  document.getElementById('generated-code-wrap').style.display='flex';
+  loadUsedCodes();
+};
+
+window.copyCode=()=>{
+  const code=document.getElementById('generated-code-box').textContent;
+  navigator.clipboard.writeText(code).then(()=>alert('تم النسخ ✅'));
+};
+
+async function loadUsedCodes() {
+  const list=document.getElementById('codes-history-list');
+  list.innerHTML='<div class="ld">جاري التحميل...</div>';
+  try {
+    const snap=await getDocs(collection(db,'activation_codes'));
+    list.innerHTML='';
+    snap.forEach(d=>{
+      const c={id:d.id,...d.data()};
+      list.insertAdjacentHTML('beforeend',`
+        <div class="row-item">
+          <div class="row-info" style="flex-direction:column;align-items:flex-start;gap:2px">
+            <code style="font-size:15px;font-weight:900;letter-spacing:1px">${c.id}</code>
+            <span class="muted" style="font-size:11px">
+              ${c.type==='section'?'قسم':'مادة'} ·
+              ${c.section} ${c.subject?'· '+c.subject:''}
+              ${c.expires?'· ينتهي '+c.expires:''}
+            </span>
+          </div>
+          <div class="row-actions" style="flex-direction:column;align-items:flex-end">
+            <span class="${c.used?'badge-paid':'badge-free'}">${c.used?'مستخدم':'متاح'}</span>
+            <button class="btn-sm btn-del" style="margin-top:4px" onclick="deleteCode('${c.id}')">🗑️</button>
+          </div>
+        </div>`);
+    });
+    if(!snap.size) list.innerHTML='<div class="ld muted">لا توجد أكواد بعد</div>';
+  } catch(e){ list.innerHTML='<div class="ld muted">خطأ في التحميل</div>'; }
+}
+
+window.deleteCode=async(id)=>{
+  if(!confirm('حذف الكود؟')) return;
+  await deleteDoc(doc(db,'activation_codes',id));
+  loadUsedCodes();
+};
+
+// ══════════════════════════════════════
+//  UTILS
+// ══════════════════════════════════════
+window.closeModal=id=>{
+  document.getElementById(id).style.display='none';
+};
+window.stopProp=e=>e.stopPropagation();
+
+</script>
+</head>
+<body>
+
+<!-- ══════ LOGIN ══════ -->
+<div id="screen-login" style="display:flex;min-height:100vh;align-items:center;justify-content:center;background:var(--navy)">
+  <div style="background:#fff;border-radius:20px;padding:36px;width:340px;text-align:center">
+    <div style="font-size:36px;margin-bottom:8px">🔐</div>
+    <h2 style="font-size:20px;margin-bottom:20px;color:var(--navy)">لوحة الأدمن</h2>
+    <input id="a-email" type="email" placeholder="البريد الإلكتروني" class="admin-input"><br>
+    <input id="a-pass"  type="password" placeholder="كلمة المرور" class="admin-input" style="margin-top:10px">
+    <div id="a-err" style="color:#e74c3c;font-size:12px;margin:8px 0"></div>
+    <button onclick="adminLogin()" class="btn-primary" style="margin-top:8px">دخول</button>
+  </div>
+</div>
+
+<!-- ══════ ADMIN MAIN ══════ -->
+<div id="screen-admin" style="display:none;flex-direction:column;min-height:100vh">
+
+  <!-- Header -->
+  <div class="admin-header">
+    <div>
+      <h1>🎓 لوحة الأدمن</h1>
+      <span id="admin-section-label" style="font-size:12px;opacity:.7">بكالوريا علمي</span>
+    </div>
+    <button onclick="adminLogout()" class="btn-logout">خروج</button>
+  </div>
+
+  <!-- Section Picker -->
+  <div class="section-picker">
+    <button class="sec-btn active" data-s="sci"   onclick="selectSection('sci')">علمي</button>
+    <button class="sec-btn"        data-s="lit"   onclick="selectSection('lit')">أدبي</button>
+    <button class="sec-btn"        data-s="ninth" onclick="selectSection('ninth')">تاسع</button>
+  </div>
+
+  <!-- Tab Nav -->
+  <div class="tab-nav">
+    <button class="tab-btn active" data-t="courses"  onclick="openTab('courses')">📅 الدورات</button>
+    <button class="tab-btn"        data-t="subjects" onclick="openTab('subjects')">📖 المواد</button>
+    <button class="tab-btn"        data-t="codes"    onclick="openTab('codes')">🔑 الأكواد</button>
+  </div>
+
+  <div class="admin-content">
+
+    <!-- ①  COURSES PANE -->
+    <div id="pane-courses" class="tab-pane">
+      <div class="pane-toolbar">
+        <h3>الدورات</h3>
+        <button class="btn-add" onclick="showAddCourse()">+ إضافة دورة</button>
+      </div>
+      <div id="admin-courses-list"></div>
+
+      <!-- Course Subjects sub-pane -->
+      <div id="course-subjects-pane" class="sub-pane" style="display:none">
+        <div class="sub-pane-header">
+          <h4 id="course-subjects-header"></h4>
+          <button class="btn-sm" onclick="closeCourseSubjects()">✕ إغلاق</button>
+        </div>
+        <button class="btn-add" onclick="showAddCourseSubject()" style="margin-bottom:12px">+ إضافة مادة</button>
+        <div id="course-subjects-list-admin"></div>
+      </div>
+    </div>
+
+    <!-- ②  SUBJECTS PANE -->
+    <div id="pane-subjects" class="tab-pane" style="display:none">
+      <div class="pane-toolbar">
+        <h3>المواد المستقلة</h3>
+        <button class="btn-add" onclick="showAddSubject()">+ إضافة مادة</button>
+      </div>
+      <div id="admin-subjects-list"></div>
+
+      <!-- Lessons sub-pane -->
+      <div id="lessons-pane" class="sub-pane" style="display:none">
+        <div class="sub-pane-header">
+          <h4 id="lessons-pane-header"></h4>
+          <button class="btn-sm" onclick="closeLessonsPane()">✕ إغلاق</button>
+        </div>
+        <button class="btn-add" onclick="showAddLesson()" style="margin-bottom:12px">+ إضافة درس</button>
+        <div id="lessons-list-admin"></div>
+      </div>
+    </div>
+
+    <!-- ③  CODES PANE -->
+    <div id="pane-codes" class="tab-pane" style="display:none">
+      <h3 style="margin-bottom:16px">🔑 توليد أكواد تفعيل</h3>
+
+      <div class="code-generator">
+        <div class="form-row">
+          <label>نوع الكود</label>
+          <select id="code-type" class="admin-select">
+            <option value="section">قسم كامل</option>
+            <option value="subject">مادة محددة</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>القسم</label>
+          <select id="code-section" class="admin-select">
+            <option value="sci">بكالوريا علمي</option>
+            <option value="lit">بكالوريا أدبي</option>
+            <option value="ninth">الصف التاسع</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>اسم المادة <span class="muted">(للنوع: مادة محددة)</span></label>
+          <input id="code-subject" type="text" placeholder="مثال: الرياضيات" class="admin-input">
+        </div>
+        <div class="form-row">
+          <label>تاريخ الانتهاء <span class="muted">(اختياري)</span></label>
+          <input id="code-expires" type="date" class="admin-input">
+        </div>
+        <button class="btn-primary" onclick="generateCode()">⚡ توليد كود</button>
+
+        <!-- Generated Code -->
+        <div id="generated-code-wrap" style="display:none;margin-top:16px;align-items:center;gap:12px">
+          <div id="generated-code-box" style="font-size:22px;font-weight:900;letter-spacing:2px;background:var(--gray);padding:12px 20px;border-radius:10px;flex:1;text-align:center"></div>
+          <button class="btn-add" onclick="copyCode()">📋 نسخ</button>
+        </div>
+      </div>
+
+      <h3 style="margin:24px 0 12px">الأكواد المولّدة</h3>
+      <div id="codes-history-list"></div>
+    </div>
+
+    <!-- QUESTIONS sub-pane (shared) -->
+    <div id="questions-pane" class="sub-pane" style="display:none;margin-top:16px" data-source="">
+      <div class="sub-pane-header">
+        <h4 id="questions-pane-header"></h4>
+        <button class="btn-sm" onclick="closeQuestionsPane()">✕ إغلاق</button>
+      </div>
+      <button class="btn-add" onclick="showAddQuestion()" style="margin-bottom:12px">+ إضافة سؤال</button>
+      <div id="questions-list-admin"></div>
+    </div>
+
+  </div><!-- /admin-content -->
+</div><!-- /screen-admin -->
+
+<!-- ════════════════════════════
+     MODALS
+════════════════════════════ -->
+
+<!-- Course Modal -->
+<div id="modal-course" class="modal-overlay" onclick="closeModal('modal-course')" style="display:none">
+  <div class="modal-box" onclick="stopProp(event)">
+    <h3 id="modal-course-title" style="margin-bottom:16px">إضافة دورة</h3>
+    <input type="hidden" id="course-form-id">
+    <label>اسم الدورة</label>
+    <input id="course-form-name" type="text" placeholder="مثال: دورة الربيع 2025" class="admin-input">
+    <label style="margin-top:10px">تاريخ الدورة</label>
+    <input id="course-form-date" type="text" placeholder="مثال: 2025-04" class="admin-input">
+    <label style="margin-top:10px;display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input id="course-form-free" type="checkbox"> مجاني للجميع
+    </label>
+    <div class="modal-btns">
+      <button class="btn-primary" onclick="saveCourse()">حفظ</button>
+      <button class="btn-cancel" onclick="closeModal('modal-course')">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<!-- Course Subject Modal -->
+<div id="modal-course-subject" class="modal-overlay" onclick="closeModal('modal-course-subject')" style="display:none">
+  <div class="modal-box" onclick="stopProp(event)">
+    <h3 style="margin-bottom:16px">إضافة مادة للدورة</h3>
+    <label>اسم المادة</label>
+    <input id="csub-name" type="text" placeholder="مثال: الرياضيات" class="admin-input">
+    <label style="margin-top:10px">أيقونة (إيموجي)</label>
+    <input id="csub-icon" type="text" placeholder="📐" class="admin-input">
+    <div class="modal-btns">
+      <button class="btn-primary" onclick="saveCourseSubject()">حفظ</button>
+      <button class="btn-cancel" onclick="closeModal('modal-course-subject')">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<!-- Subject Modal -->
+<div id="modal-subject" class="modal-overlay" onclick="closeModal('modal-subject')" style="display:none">
+  <div class="modal-box" onclick="stopProp(event)">
+    <h3 id="modal-subject-title" style="margin-bottom:16px">إضافة مادة</h3>
+    <input type="hidden" id="sub-form-id">
+    <label>اسم المادة</label>
+    <input id="sub-form-name" type="text" placeholder="الرياضيات" class="admin-input">
+    <label style="margin-top:10px">أيقونة</label>
+    <input id="sub-form-icon" type="text" placeholder="📐" class="admin-input">
+    <label style="margin-top:10px;display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input id="sub-form-free" type="checkbox"> مجانية للجميع
+    </label>
+    <div class="modal-btns">
+      <button class="btn-primary" onclick="saveSubject()">حفظ</button>
+      <button class="btn-cancel" onclick="closeModal('modal-subject')">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<!-- Lesson Modal -->
+<div id="modal-lesson" class="modal-overlay" onclick="closeModal('modal-lesson')" style="display:none">
+  <div class="modal-box" onclick="stopProp(event)">
+    <h3 id="modal-lesson-title" style="margin-bottom:16px">إضافة درس</h3>
+    <input type="hidden" id="lesson-form-id">
+    <label>رقم الدرس (الترتيب)</label>
+    <input id="lesson-form-order" type="number" placeholder="1" class="admin-input">
+    <label style="margin-top:10px">اسم الدرس</label>
+    <input id="lesson-form-name" type="text" placeholder="مثال: المشتقات" class="admin-input">
+    <div class="modal-btns">
+      <button class="btn-primary" onclick="saveLesson()">حفظ</button>
+      <button class="btn-cancel" onclick="closeModal('modal-lesson')">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<!-- Question Modal -->
+<div id="modal-question" class="modal-overlay" onclick="closeModal('modal-question')" style="display:none">
+  <div class="modal-box modal-box-wide" onclick="stopProp(event)">
+    <h3 id="modal-q-title" style="margin-bottom:16px">إضافة سؤال</h3>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <!-- Question side -->
+      <div>
+        <label class="col-label">📝 السؤال</label>
+        <label>رقم الترتيب</label>
+        <input id="q-form-order" type="number" placeholder="1" class="admin-input">
+        <label style="margin-top:10px">نص السؤال</label>
+        <textarea id="q-form-text" class="admin-textarea" placeholder="اكتب نص السؤال هنا..."></textarea>
+        <label style="margin-top:10px">رابط صورة السؤال <span class="muted">(اختياري)</span></label>
+        <input id="q-img-url" type="url" placeholder="https://..." class="admin-input" oninput="previewUrl('q-img-url','q-img-preview')">
+        <img id="q-img-preview" style="display:none;width:100%;border-radius:8px;margin-top:8px">
+      </div>
+      <!-- Answer side -->
+      <div>
+        <label class="col-label">✅ الجواب</label>
+        <label>نص الجواب</label>
+        <textarea id="q-form-ans-text" class="admin-textarea" placeholder="اكتب الجواب هنا..."></textarea>
+        <label style="margin-top:10px">رابط صورة الجواب <span class="muted">(اختياري)</span></label>
+        <input id="ans-img-url" type="url" placeholder="https://..." class="admin-input" oninput="previewUrl('ans-img-url','ans-img-preview')">
+        <img id="ans-img-preview" style="display:none;width:100%;border-radius:8px;margin-top:8px">
+        <label style="margin-top:10px">رقم الدورة <span class="muted">(للدروس فقط)</span></label>
+        <input id="q-form-course-ref" type="text" placeholder="مثال: دورة 2024" class="admin-input">
+      </div>
+    </div>
+
+    <div class="modal-btns">
+      <button class="btn-primary" onclick="saveQuestion()">💾 حفظ السؤال</button>
+      <button class="btn-cancel"  onclick="closeModal('modal-question')">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--navy:#0a1628;--blue:#1040a0;--gold:#f0a500;--gray:#f0f4fa;--gray-mid:#d8e2f4;--text:#0a1628;--muted:#5a6a8a}
+body{font-family:'Cairo',sans-serif;background:var(--gray);color:var(--text);min-height:100vh}
+
+.admin-header{background:var(--navy);color:#fff;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.admin-header h1{font-size:17px;font-weight:900}
+.btn-logout{background:rgba(255,255,255,0.12);border:none;color:#fff;padding:7px 14px;border-radius:8px;font-family:'Cairo',sans-serif;cursor:pointer;font-size:13px}
+
+.section-picker{display:flex;gap:8px;padding:12px 16px;background:#fff;border-bottom:1px solid var(--gray-mid)}
+.sec-btn{flex:1;padding:9px;border:2px solid var(--gray-mid);border-radius:10px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;cursor:pointer;background:#fff;color:var(--muted);transition:all .2s}
+.sec-btn.active{border-color:var(--navy);background:var(--navy);color:#fff}
+
+.tab-nav{display:flex;gap:0;background:#fff;border-bottom:2px solid var(--gray-mid)}
+.tab-btn{flex:1;padding:12px;border:none;background:none;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;cursor:pointer;color:var(--muted);border-bottom:3px solid transparent;transition:all .2s}
+.tab-btn.active{color:var(--navy);border-bottom-color:var(--navy)}
+
+.admin-content{padding:16px;max-width:900px;margin:0 auto;width:100%}
+.tab-pane{display:block}
+.pane-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.pane-toolbar h3{font-size:16px;font-weight:900;color:var(--navy)}
+
+.sub-pane{background:#fff;border-radius:16px;padding:16px;border:2px solid var(--gray-mid)}
+.sub-pane-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sub-pane-header h4{font-size:14px;font-weight:800;color:var(--navy)}
+
+.row-item{background:#fff;border-radius:12px;padding:14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;box-shadow:0 2px 10px rgba(10,22,40,0.07)}
+.row-info{display:flex;align-items:center;gap:10px;flex:1;flex-wrap:wrap}
+.row-info strong{font-size:14px;color:var(--navy)}
+.row-info span{font-size:12px;color:var(--muted)}
+.row-actions{display:flex;gap:6px;align-items:center;flex-shrink:0}
+
+.btn-sm{padding:6px 10px;border:none;border-radius:7px;font-family:'Cairo',sans-serif;font-size:12px;cursor:pointer;font-weight:700}
+.btn-edit{background:#e3f2fd;color:#1565c0}
+.btn-open{background:#e8f5e9;color:#2e7d32}
+.btn-del{background:#ffebee;color:#c62828}
+.btn-add{background:var(--navy);color:#fff;padding:9px 16px;border:none;border-radius:10px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;cursor:pointer}
+.btn-primary{background:linear-gradient(135deg,#1a3a6e,var(--blue));color:#fff;padding:12px 20px;border:none;border-radius:12px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:900;cursor:pointer;width:100%}
+.btn-cancel{background:var(--gray);color:var(--text);padding:12px 20px;border:none;border-radius:12px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:700;cursor:pointer}
+.modal-btns{display:flex;gap:10px;margin-top:16px}
+
+.badge-free{background:#e8f5e9;color:#2e7d32;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px}
+.badge-paid{background:#fff3e0;color:#e65100;font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px}
+.order-badge{width:28px;height:28px;border-radius:50%;background:var(--navy);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0}
+.course-ref-badge{background:var(--navy);color:#fff;font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700}
+
+.admin-input{width:100%;padding:10px 12px;border:1.5px solid var(--gray-mid);border-radius:10px;font-family:'Cairo',sans-serif;font-size:14px;outline:none;margin-top:6px;transition:border-color .2s}
+.admin-input:focus{border-color:var(--blue)}
+.admin-select{width:100%;padding:10px 12px;border:1.5px solid var(--gray-mid);border-radius:10px;font-family:'Cairo',sans-serif;font-size:14px;outline:none;margin-top:6px;background:#fff}
+.admin-textarea{width:100%;padding:10px 12px;border:1.5px solid var(--gray-mid);border-radius:10px;font-family:'Cairo',sans-serif;font-size:14px;outline:none;margin-top:6px;min-height:100px;resize:vertical;transition:border-color .2s}
+.admin-textarea:focus{border-color:var(--blue)}
+.admin-file{margin-top:6px;font-size:12px;width:100%}
+.col-label{font-size:13px;font-weight:900;color:var(--navy);display:block;margin-bottom:8px;border-bottom:2px solid var(--gray-mid);padding-bottom:6px}
+
+.modal-overlay{position:fixed;inset:0;background:rgba(10,22,40,0.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal-box{background:#fff;border-radius:20px;padding:24px;width:100%;max-width:420px;max-height:90vh;overflow-y:auto}
+.modal-box-wide{max-width:780px}
+
+.q-admin-card{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;border:1.5px solid var(--gray-mid)}
+.q-admin-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.q-admin-body{font-size:13px;color:var(--text);margin-bottom:8px}
+.q-admin-answer{background:#e8f5e9;border-radius:8px;padding:10px;font-size:12px}
+.a-tag{font-weight:700;color:#2e7d32;font-size:11px;margin-bottom:4px;display:block}
+.q-preview-text{font-size:13px;line-height:1.6;margin-bottom:6px}
+.q-preview-img{width:100%;border-radius:8px;margin-top:6px;max-height:200px;object-fit:contain}
+
+.code-generator{background:#fff;border-radius:16px;padding:20px;border:1.5px solid var(--gray-mid);margin-bottom:20px}
+.form-row{margin-bottom:14px}
+.form-row label{font-size:13px;font-weight:700;color:var(--navy)}
+
+.ld{text-align:center;padding:32px;color:var(--muted);font-size:14px}
+.muted{color:var(--muted)}
+</style>
+</body>
+</html>
